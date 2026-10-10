@@ -23,7 +23,16 @@ Phones need an HTTPS link (for microphone and location). In a second terminal:
 ```
 
 It prints a `https://….trycloudflare.com` link. Anyone with the link can open the app; the link
-changes every time the tunnel restarts.
+changes every time the tunnel restarts. Start the server with `PUBLIC_URL=<that link>` so the
+"Add a phone" QR code points phones at it:
+
+```bash
+PUBLIC_URL=https://….trycloudflare.com npx next start -p 3002
+```
+
+**Adding phones as microphones:** in How it works → Acoustic sensor grid (or the Command center's
+Sensor grid), scan the QR code with a phone, tap **Start listening** and allow the microphone. The
+"phones listening" count goes up within 20 seconds. Keep the page open with the screen on.
 
 ## Demo (about 3 minutes)
 
@@ -37,7 +46,9 @@ changes every time the tunnel restarts.
    event by event (weight × mode × age × hour), its citywide rank and the AVOID / PENALIZE / CLEAR decision.
    The event log shows every route request, avoid zone and live alert as it happens.
 6. **Sound alert** (keep it short): ☰ menu → *Listen for gunshots* on two phones and play a clip (tell the
-   organisers first), or ☰ → *Simulate a bang*. Answer **Danger**; routes nearby bend around it.
+   organisers first), or ☰ → *Simulate a bang*. Answer **Danger**; routes nearby bend around it. The
+   gunshot area becomes a no-go zone: routes go around it even when that takes much longer, the fastest
+   option is flagged, and a warning shows when the start or destination is inside it.
 7. ☰ menu: light / dark mode (also the moon / sun button), language, large text, high contrast, safe places.
 8. **3D** button (top right): real terrain, lit 3D buildings, sky and haze. Works on the default map and on
    satellite imagery (press the satellite button too).

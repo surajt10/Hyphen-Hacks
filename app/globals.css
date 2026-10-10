@@ -3117,3 +3117,240 @@ button {
     display: none;
   }
 }
+
+/* ---------- v7: live gunshot alerts on a trip ---------- */
+.trip-alert {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.trip-alert svg {
+  color: var(--danger);
+  margin-top: 1px;
+}
+.trip-alert div {
+  display: grid;
+  gap: 2px;
+}
+.trip-alert span {
+  color: var(--text-2);
+}
+.trip-alert.bad {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+}
+.o-sub.o-danger {
+  color: var(--danger);
+}
+.pc-alert {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--danger);
+  margin: 2px 0 6px;
+}
+/* Join the sensor grid (opened from a /?listen=1 link) */
+.join {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 24px));
+  z-index: 30;
+  padding: 18px;
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+}
+.join h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.join p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.join-actions {
+  display: flex;
+  gap: 8px;
+}
+.join-actions .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+/* ---------- v7: How it works panel, professional pass ----------
+   Neutral surfaces; status is a small dot or a short label, never a tinted card. */
+.eng-scan {
+  display: none;
+}
+.engine .eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.engine .eyebrow svg {
+  display: none;
+}
+.badge.live {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3fb950;
+  animation: blink 2.4s ease-in-out infinite;
+}
+.eng-hint {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-2);
+  font-weight: 400;
+}
+.eng-hint svg {
+  color: var(--text-3);
+}
+.eng-tool svg {
+  color: var(--text-2);
+}
+.eng-tool.on svg {
+  color: var(--accent);
+}
+.intel-item,
+.intel-item.warn-item,
+.intel-item.confirmed {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+}
+.intel-item strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.intel-item strong::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  flex: 0 0 auto;
+}
+.intel-item.warn-item strong::before,
+.intel-item.confirmed strong::before {
+  background: #e5484d;
+}
+.intel-item > span {
+  padding-left: 14px;
+}
+.intel-calm {
+  background: var(--surface);
+  border-radius: 8px;
+}
+.sensor-row > div {
+  border-radius: 8px;
+}
+.sensor-row .num {
+  color: var(--text);
+  font-weight: 600;
+}
+.hot .val.up {
+  color: var(--text-2);
+}
+.constellations button {
+  border-radius: 8px;
+  align-items: center;
+}
+.constellations button:hover {
+  border-color: var(--text-3);
+  box-shadow: none;
+}
+.constellations button.on {
+  border-color: var(--accent);
+  box-shadow: none;
+}
+.c-count {
+  min-width: 30px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 0 0 auto;
+}
+.contrib {
+  border-left-width: 2px;
+}
+.join-grid {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  margin-top: 8px;
+}
+.join-qr {
+  width: 112px;
+  height: 112px;
+  border-radius: 4px;
+}
+.join-text {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 0;
+}
+.join-text strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.join-text code {
+  font-size: 11px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.join-text .btn {
+  justify-self: start;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.cmd-p-sensor .join-grid {
+  grid-template-columns: 96px 1fr;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 0 2px;
+  margin: 8px 0 0;
+}
+.cmd-p-sensor .join-qr {
+  width: 96px;
+  height: 96px;
+}

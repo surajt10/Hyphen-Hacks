@@ -7,42 +7,12 @@
 import "./command.css";
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { cellToLatLng } from "h3-js";
-import {
-  Activity,
-  AudioWaveform,
-  BadgeCheck,
-  BellRing,
-  Camera,
-  Car,
-  Cctv,
-  ChartColumn,
-  CloudSun,
-  Construction,
-  Database,
-  LocateFixed,
-  Megaphone,
-  Moon,
-  OctagonAlert,
-  Radio,
-  ShieldAlert,
-  ShieldCheck,
-  Siren,
-  Smartphone,
-  Sparkles,
-  Sun,
-  TrafficCone,
-  TrendingDown,
-  TrendingUp,
-  TriangleAlert,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { ShieldCheck, X } from "lucide-react";
 import type { CellRisk, Ev, LiveZone } from "@/lib/scoring";
 import type { Anomaly, Call, Constellation, Forecast } from "@/lib/intel";
 import { DICTS, EVENT_LABEL, type Key } from "@/lib/i18n";
 import { fmtAgo, fmtHour, placeOf } from "@/lib/format";
-import Galaxy from "./Galaxy";
-import type { LogEntry, Sources } from "./Engine";
+import { JoinGrid, type LogEntry, type Sources } from "./Engine";
 
 export type TrafficIncident = {
   id: string;
@@ -74,7 +44,8 @@ export type CommandProps = {
 
 type Pt = { lat: number; lng: number };
 type Kind = "sound" | "report" | "anomaly" | "traffic" | "call";
-type Tone = Kind | "sensor" | "cam";
+// Severity only ever drives a small status dot, always next to text that says the same thing.
+type Level = "crit" | "warn" | "info";
 type Item = {
   id: string;
   kind: Kind;
@@ -84,9 +55,8 @@ type Item = {
   place: string;
   lat: number;
   lng: number;
-  icon?: LucideIcon;
+  level: Level;
   verified?: Call; // SFPD gun call that backs up a phone sound alert
-  severe?: boolean;
 };
 
 const FEED_MAX = 40;
@@ -95,20 +65,12 @@ const NO_CALLS: Call[] = [];
 const NO_CAMS: Sources["cameras"] = [];
 const NO_FEEDS: Sources["feeds"] = [];
 
-const KIND: Record<Kind, { label: string; icon: LucideIcon }> = {
-  sound: { label: "Gunshot", icon: AudioWaveform },
-  report: { label: "Report", icon: Megaphone },
-  anomaly: { label: "Anomaly", icon: ShieldAlert },
-  traffic: { label: "Traffic", icon: TrafficCone },
-  call: { label: "SFPD", icon: Siren },
-};
-const TRAFFIC_ICON: Record<TrafficIncident["kind"], LucideIcon> = {
-  accident: Car,
-  jam: TrafficCone,
-  closure: OctagonAlert,
-  roadworks: Construction,
-  hazard: TriangleAlert,
-  other: TrafficCone,
+const KIND: Record<Kind, string> = {
+  sound: "Gunshot",
+  report: "Report",
+  anomaly: "Anomaly",
+  traffic: "Traffic",
+  call: "SFPD",
 };
 
 // ---------- small helpers ----------
@@ -212,11 +174,11 @@ function useFeed(p: CommandProps, calls: Call[], near: (lat: number, lng: number
           lat: z.lat,
           lng: z.lng,
           verified: v,
-          severe: z.level === "confirmed" || !!v,
+          level: z.level === "confirmed" || v ? "crit" : "warn",
         });
       } else {
         const label = z.category ? DICTS.en[`cat_${z.category}` as Key] : undefined;
-        add({ id: `z:${z.id}`, kind: "report", t: z.ts, title: label || "Community report", place: `${near(z.lat, z.lng)} · ${plural(z.count, "report")}`, lat: z.lat, lng: z.lng });
+        add({ id: `z:${z.id}`, kind: "report", t: z.ts, title: label || "Community report", place: `${near(z.lat, z.lng)} · ${plural(z.count, "report")}`, lat: z.lat, lng: z.lng, level: "info" });
       }
     }
 
@@ -231,12 +193,13 @@ function useFeed(p: CommandProps, calls: Call[], near: (lat: number, lng: number
         place: where ? `near ${titleCase(where)}` : near(a.lat, a.lng),
         lat: a.lat,
         lng: a.lng,
+        level: "warn",
       });
     }
 
     // Only the most serious traffic incidents: a ticker full of minor jams is noise.
     for (const x of [...traffic].sort(bySeverity).slice(0, TRAFFIC_MAX)) {
-      add({ id: `t:${x.id}`, kind: "traffic", t: 0, title: x.title || "Traffic incident", place: x.detail || near(x.lat, x.lng), lat: x.lat, lng: x.lng, icon: TRAFFIC_ICON[x.kind] ?? TrafficCone });
+      add({ id: `t:${x.id}`, kind: "traffic", t: 0, title: x.title || "Traffic incident", place: x.detail || near(x.lat, x.lng), lat: x.lat, lng: x.lng, level: x.magnitude >= 3 ? "warn" : "info" });
     }
 
     const dup = new Set<string>();
@@ -244,7 +207,7 @@ function useFeed(p: CommandProps, calls: Call[], near: (lat: number, lng: number
       const id = `c:${c.ts}:${c.type}:${c.where}`;
       if (dup.has(id)) continue;
       dup.add(id);
-      add({ id, kind: "call", t: c.ts, title: sentence(c.type), place: `near ${titleCase(c.where)}`, lat: c.lat, lng: c.lng });
+      add({ id, kind: "call", t: c.ts, title: sentence(c.type), place: `near ${titleCase(c.where)}`, lat: c.lat, lng: c.lng, level: "info" });
     }
 
     // First sightings mark genuinely new arrivals. Items already there when the console
@@ -349,12 +312,14 @@ export default function Command(p: CommandProps) {
 
   const sounds = p.zones.filter((z) => z.kind === "sound").length;
   const reports = p.zones.length - sounds;
+  const confirmed = p.zones.some((z) => z.kind === "sound" && (z.level === "confirmed" || p.corroborated.has(z.id)));
   const newestZone = p.zones.reduce<LiveZone | null>((m, z) => (hasPoint(z) && (!m || z.ts > m.ts) ? z : m), null);
   const topAnomaly = p.anomalies.find(hasPoint);
   const busiest = p.sensors.cells.reduce<{ cell: string; n: number } | null>((m, c) => (!m || c.n > m.n ? c : m), null);
   const busiestPt = busiest ? cellPoint(busiest.cell) : null;
   const maxDelay = p.traffic.reduce((m, x) => Math.max(m, x.delayMin || 0), 0);
   const okFeeds = feeds.filter((f) => f.ok).length;
+  const feedState = loading ? " cmd-wait" : feeds.length && !okFeeds ? " cmd-err" : okFeeds < feeds.length ? " cmd-warn" : "";
   const weatherNow = feeds.find((f) => f.id === "weather" && f.ok && f.value && f.value !== "unavailable")?.value;
   const sunset = p.sources?.weather ? Date.parse(p.sources.weather.sunset) : NaN;
   const go = (pt: Pt | null | undefined, zoom: number) => (pt && hasPoint(pt) ? () => p.onFocus(pt.lng, pt.lat, zoom) : undefined);
@@ -362,63 +327,38 @@ export default function Command(p: CommandProps) {
   return (
     <div className={`cmd-root ${dark ? "cmd-dark" : "cmd-light"}`}>
       <header className="cmd-top">
-        {dark && (
-          <div className="cmd-stars" aria-hidden="true">
-            <Galaxy density={0.55} glowIntensity={0.3} saturation={0.15} hueShift={210} twinkleIntensity={0.45} rotationSpeed={0.03} starSpeed={0.25} speed={0.8} mouseInteraction={false} mouseRepulsion={false} transparent />
-          </div>
-        )}
         <div className="cmd-brand">
-          <span className="cmd-logo" aria-hidden="true">
-            <ShieldCheck size={20} />
+          <ShieldCheck className="cmd-mark" size={16} aria-hidden="true" />
+          <h1 className="cmd-title">NorthStar Command</h1>
+          <span className="cmd-sub">San Francisco Bay Area</span>
+          <span className="cmd-live">
+            <span className="cmd-live-dot" aria-hidden="true" />
+            Live
           </span>
-          <div className="cmd-brand-text">
-            <div className="cmd-title-row">
-              <h1 className="cmd-title">NorthStar Command</h1>
-              <span className="cmd-live">
-                <span className="cmd-live-dot" aria-hidden="true" />
-                LIVE
-              </span>
-            </div>
-            <p className="cmd-sub">San Francisco Bay Area · live</p>
-          </div>
         </div>
 
         <ul className="cmd-status" aria-label="System status">
           <li>
-            <span className={`cmd-dot${loading ? " cmd-wait" : okFeeds < feeds.length ? " cmd-err" : ""}`} aria-hidden="true" />
+            <span className={`cmd-dot${feedState}`} aria-hidden="true" />
             {loading ? "Connecting to feeds" : `${okFeeds}/${feeds.length} feeds online`}
           </li>
-          {weatherNow && (
-            <li>
-              <CloudSun size={14} aria-hidden="true" />
-              {weatherNow}
-            </li>
-          )}
-          {p.sources?.weather && Number.isFinite(sunset) && (
-            <li>
-              {p.sources.weather.isDay ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
-              {p.sources.weather.isDay ? `Sunset ${timeOfDay(sunset)}` : "After dark"}
-            </li>
-          )}
+          {weatherNow && <li>{weatherNow}</li>}
+          {p.sources?.weather && Number.isFinite(sunset) && <li>{p.sources.weather.isDay ? `Sunset ${timeOfDay(sunset)}` : "After dark"}</li>}
         </ul>
 
         <div className="cmd-top-end">
           <Clock />
           <button type="button" className="cmd-exit" onClick={p.onExit} aria-label="Exit command center" aria-keyshortcuts="Escape" title="Exit command center (Esc)">
-            <X size={15} aria-hidden="true" />
+            <X size={14} aria-hidden="true" />
             <span className="cmd-exit-text">Exit</span>
             <kbd aria-hidden="true">Esc</kbd>
           </button>
         </div>
       </header>
 
-      <Viewfinder />
-
       <div className="cmd-sheet">
         <section className="cmd-kpis" aria-label="Key figures">
           <Kpi
-            tone="call"
-            icon={Siren}
             label="Violent calls (24 h)"
             value={calls.length}
             note={loading ? "Connecting to SFPD dispatch…" : `${callStats.lastHour.toLocaleString()} in the last hour`}
@@ -427,22 +367,18 @@ export default function Command(p: CommandProps) {
             still={still}
           />
           <Kpi
-            tone="sound"
-            icon={BellRing}
             label="Live alerts"
             value={p.zones.length}
-            hot={p.zones.length > 0}
+            level={confirmed ? "crit" : p.zones.length ? "warn" : undefined}
             note={p.zones.length ? `${plural(sounds, "gunshot")} · ${plural(reports, "report")}` : "No active alerts"}
             action="Show the newest alert"
             onClick={go(newestZone, 16)}
             still={still}
           />
           <Kpi
-            tone="anomaly"
-            icon={ShieldAlert}
             label="Anomalies"
             value={p.anomalies.length}
-            hot={p.anomalies.length > 0}
+            level={p.anomalies.length ? "warn" : undefined}
             note={
               topAnomaly
                 ? `${Math.round(topAnomaly.n / Math.max(topAnomaly.expected, 0.15))}× normal${topAnomaly.calls[0] ? ` near ${titleCase(topAnomaly.calls[0].where)}` : ""}`
@@ -455,8 +391,6 @@ export default function Command(p: CommandProps) {
             still={still}
           />
           <Kpi
-            tone="sensor"
-            icon={Smartphone}
             label="Phones listening"
             value={p.sensors.phones}
             note={p.sensors.phones ? `${plural(p.sensors.cells.length, "area")} covered` : "No phones listening now"}
@@ -465,17 +399,15 @@ export default function Command(p: CommandProps) {
             still={still}
           />
           <Kpi
-            tone="traffic"
-            icon={TrafficCone}
             label="Traffic incidents"
             value={p.traffic.length}
-            hot={p.traffic.some((x) => x.magnitude >= 3)}
+            level={p.traffic.some((x) => x.magnitude >= 3) ? "warn" : undefined}
             note={p.traffic.length ? (maxDelay ? `Worst delay ${maxDelay.toLocaleString()} min` : "Live from TomTom") : "No incidents reported"}
             action="Show the most serious incident"
             onClick={go(worstTraffic, 15)}
             still={still}
           />
-          <Kpi tone="cam" icon={Cctv} label="Cameras online" value={cams.length} note={loading ? "Connecting to Caltrans…" : "Caltrans District 4 · 60 s"} still={still} />
+          <Kpi label="Cameras online" value={cams.length} note={loading ? "Connecting to Caltrans…" : "Caltrans District 4 · 60 s"} still={still} />
         </section>
 
         <div className="cmd-col cmd-left">
@@ -500,11 +432,10 @@ export default function Command(p: CommandProps) {
 }
 
 // ---------- pieces ----------
-function Head({ id, icon: Icon, title, meta }: { id: string; icon: LucideIcon; title: string; meta?: ReactNode }) {
+function Head({ id, title, meta }: { id: string; title: string; meta?: ReactNode }) {
   return (
     <div className="cmd-ph">
       <h2 id={id} className="cmd-eyebrow">
-        <Icon size={12} aria-hidden="true" />
         {title}
       </h2>
       {meta != null && <span className="cmd-meta">{meta}</span>}
@@ -512,13 +443,8 @@ function Head({ id, icon: Icon, title, meta }: { id: string; icon: LucideIcon; t
   );
 }
 
-function Empty({ icon: Icon, text }: { icon: LucideIcon; text: string }) {
-  return (
-    <div className="cmd-empty">
-      <Icon size={15} aria-hidden="true" />
-      <p>{text}</p>
-    </div>
-  );
+function Empty({ text }: { text: string }) {
+  return <p className="cmd-empty">{text}</p>;
 }
 
 function Clock() {
@@ -535,43 +461,26 @@ function Clock() {
   );
 }
 
-// Decorative corner brackets around the map window.
-function Viewfinder() {
-  return (
-    <div className="cmd-frame" aria-hidden="true">
-      <span className="cmd-corner cmd-tl" />
-      <span className="cmd-corner cmd-tr" />
-      <span className="cmd-corner cmd-bl" />
-      <span className="cmd-corner cmd-br" />
-      <span className="cmd-frame-tag">Live map</span>
-    </div>
-  );
-}
+type KpiProps = { label: string; value: number; note: string; level?: Exclude<Level, "info">; action?: string; onClick?: () => void; still: boolean };
 
-type KpiProps = { tone: Tone; icon: LucideIcon; label: string; value: number; note: string; hot?: boolean; action?: string; onClick?: () => void; still: boolean };
-
-function Kpi({ tone, icon: Icon, label, value, note, hot, action, onClick, still }: KpiProps) {
+function Kpi({ label, value, note, level, action, onClick, still }: KpiProps) {
   const shown = useCountUp(value, still);
-  const cls = `cmd-kpi cmd-t-${tone}${hot ? " cmd-hot" : ""}`;
   const body = (
     <>
       <span className="cmd-kpi-label">
-        <span className="cmd-kpi-ico" aria-hidden="true">
-          <Icon size={13} />
-        </span>
         <span className="cmd-kpi-text">{label}</span>
+        {level && <span className={`cmd-sev cmd-sev-${level}`} aria-hidden="true" />}
       </span>
       <span className="cmd-sr">{value.toLocaleString()}</span>
       <span className="cmd-kpi-num" aria-hidden="true">
         {Math.round(shown).toLocaleString()}
       </span>
       <span className="cmd-kpi-note">{note}</span>
-      {onClick && <LocateFixed className="cmd-kpi-go" size={14} aria-hidden="true" />}
     </>
   );
-  if (!onClick) return <div className={cls}>{body}</div>;
+  if (!onClick) return <div className="cmd-kpi">{body}</div>;
   return (
-    <button type="button" className={cls} onClick={onClick} title={`${action ?? "Show"} on the map`} aria-label={`${label}: ${value.toLocaleString()}. ${note}. ${action ?? "Show"} on the map.`}>
+    <button type="button" className="cmd-kpi" onClick={onClick} title={`${action ?? "Show"} on the map`} aria-label={`${label}: ${value.toLocaleString()}. ${note}. ${action ?? "Show"} on the map.`}>
       {body}
     </button>
   );
@@ -585,14 +494,15 @@ function CameraWall({ cams, loading, onFocus }: { cams: Sources["cameras"]; load
   const shown = cams.filter(hasPoint).slice(0, 6);
   return (
     <section className="cmd-panel cmd-p-cams" aria-labelledby={id}>
-      <Head id={id} icon={Cctv} title="Camera wall" meta={loading ? "connecting" : `${shown.length} of ${cams.length} live · 60 s`} />
+      <Head id={id} title="Camera wall" meta={loading ? "Connecting" : `${shown.length} of ${cams.length} live · 60 s`} />
       {shown.length ? (
         <div className="cmd-cams">
           {shown.map((c, i) => {
             const src = withMinute(c.img, minute);
+            const down = lost.has(src);
             return (
               <button key={c.img} type="button" className="cmd-cam" onClick={() => onFocus(c.lng, c.lat, 15)} aria-label={`Live camera, ${c.name}. Show on map.`} title={c.name}>
-                {lost.has(src) ? (
+                {down ? (
                   <span className="cmd-cam-lost">No signal</span>
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -605,11 +515,11 @@ function CameraWall({ cams, loading, onFocus }: { cams: Sources["cameras"]; load
                     onError={() => setLost((s) => new Set(s).add(src))}
                   />
                 )}
-                <span className="cmd-cam-top">
-                  <span className="cmd-rec">REC</span>
-                  <span>CAM {String(i + 1).padStart(2, "0")}</span>
+                {!down && <span className="cmd-cam-live">Live</span>}
+                <span className="cmd-cam-cap">
+                  <span className="cmd-cam-id">CAM {String(i + 1).padStart(2, "0")}</span>
+                  <span className="cmd-cam-name">{c.name}</span>
                 </span>
-                <span className="cmd-cam-name">{c.name}</span>
               </button>
             );
           })}
@@ -621,7 +531,7 @@ function CameraWall({ cams, loading, onFocus }: { cams: Sources["cameras"]; load
           ))}
         </div>
       ) : (
-        <Empty icon={Camera} text="No road cameras are online right now." />
+        <Empty text="No road cameras are online right now." />
       )}
     </section>
   );
@@ -633,29 +543,29 @@ function SensorCard({ sensors }: { sensors: CommandProps["sensors"] }) {
     <section className="cmd-panel cmd-p-sensor" aria-labelledby={id}>
       <Head
         id={id}
-        icon={AudioWaveform}
         title="Sensor grid"
         meta={
           sensors.phones ? (
             <>
-              <span className="cmd-pulse" aria-hidden="true" />
-              listening
+              <span className="cmd-dot" aria-hidden="true" />
+              Listening
             </>
           ) : (
-            "idle"
+            "Idle"
           )
         }
       />
-      <div className="cmd-sensor">
+      <dl className="cmd-kv">
         <div>
-          <span className="cmd-num">{sensors.phones.toLocaleString()}</span>
-          <span className="cmd-lbl">phones listening</span>
+          <dt>Phones listening</dt>
+          <dd>{sensors.phones.toLocaleString()}</dd>
         </div>
         <div>
-          <span className="cmd-num">{sensors.cells.length.toLocaleString()}</span>
-          <span className="cmd-lbl">areas covered</span>
+          <dt>Areas covered</dt>
+          <dd>{sensors.cells.length.toLocaleString()}</dd>
         </div>
-      </div>
+      </dl>
+      <JoinGrid />
       <p className="cmd-fine">Counts by area only. No audio or identities are stored.</p>
     </section>
   );
@@ -665,8 +575,8 @@ function FeedsCard({ feeds, loading }: { feeds: Sources["feeds"]; loading: boole
   const id = useId();
   const ok = feeds.filter((f) => f.ok).length;
   return (
-    <section className="cmd-panel cmd-p-feeds" aria-labelledby={id}>
-      <Head id={id} icon={Database} title="Data feeds" meta={feeds.length ? `${ok}/${feeds.length} online` : undefined} />
+    <section className="cmd-panel cmd-flush cmd-p-feeds" aria-labelledby={id}>
+      <Head id={id} title="Data feeds" meta={feeds.length ? `${ok}/${feeds.length} online` : undefined} />
       {feeds.length ? (
         <ul className="cmd-feeds">
           {feeds.map((f) => (
@@ -678,7 +588,7 @@ function FeedsCard({ feeds, loading }: { feeds: Sources["feeds"]; loading: boole
           ))}
         </ul>
       ) : (
-        <Empty icon={Database} text={loading ? "Connecting to data feeds…" : "No feed status available."} />
+        <Empty text={loading ? "Connecting to data feeds…" : "No feed status available."} />
       )}
     </section>
   );
@@ -692,51 +602,33 @@ function EventFeed({ items, total, loading, onFocus }: { items: Item[]; total: n
   const intro = t - opened < 1500; // stagger the first paint only; later rows slide in on their own
   const news = items.find((it) => it.seen > 0 && t - it.seen < 10000 && (it.kind === "sound" || it.kind === "anomaly"));
   return (
-    <section className="cmd-panel cmd-feed cmd-p-feed" aria-labelledby={id}>
-      <Head
-        id={id}
-        icon={Radio}
-        title="Live event feed"
-        meta={
-          <>
-            <span className="cmd-pulse" aria-hidden="true" />
-            {total > items.length ? `latest ${items.length} of ${total.toLocaleString()}` : plural(total, "event")}
-          </>
-        }
-      />
+    <section className="cmd-panel cmd-flush cmd-feed cmd-p-feed" aria-labelledby={id}>
+      <Head id={id} title="Live event feed" meta={total > items.length ? `Latest ${items.length} of ${total.toLocaleString()}` : plural(total, "event")} />
       {items.length ? (
         <ol className="cmd-feed-list">
           {items.map((it, i) => {
-            const K = KIND[it.kind];
-            const Icon = it.icon ?? K.icon;
+            const label = KIND[it.kind];
             const when = it.kind === "traffic" && it.seen < 0 ? "active" : fmtAgo(it.t);
             const fresh = it.seen > 0 && t - it.seen < 10000;
             return (
-              <li
-                key={it.id}
-                className={`cmd-ev cmd-t-${it.kind}${it.severe ? " cmd-ev-severe" : ""}${fresh ? " cmd-fresh" : ""}`}
-                style={intro ? { animationDelay: `${Math.min(i, 16) * 28}ms` } : undefined}
-              >
+              <li key={it.id} className={`cmd-ev cmd-ev-${it.level}${fresh ? " cmd-fresh" : ""}`} style={intro ? { animationDelay: `${Math.min(i, 16) * 28}ms` } : undefined}>
                 <button
                   type="button"
                   className="cmd-ev-btn"
                   onClick={() => onFocus(it.lng, it.lat, 16)}
-                  aria-label={`${K.label}: ${it.title}, ${it.place}, ${when}${it.verified ? ", corroborated by SFPD dispatch" : ""}. Show on map.`}
+                  aria-label={`${label}: ${it.title}, ${it.place}, ${when}${it.verified ? ", corroborated by SFPD dispatch" : ""}. Show on map.`}
                 >
-                  <span className="cmd-ev-bar" aria-hidden="true" />
+                  <span className={`cmd-sev cmd-sev-${it.level}`} aria-hidden="true" />
                   <span className="cmd-ev-title">{it.title}</span>
                   <time className="cmd-ev-time" dateTime={iso(it.t)}>
                     {when}
                   </time>
                   <span className="cmd-ev-sub">
-                    <span className="cmd-chip">
-                      <Icon size={11} aria-hidden="true" />
-                      {K.label}
-                    </span>
+                    <span className="cmd-type">{label}</span>
                     <span className="cmd-ev-place">{it.place}</span>
                     {it.verified && (
-                      <span className="cmd-chip cmd-chip-crit" title={`SFPD dispatch: ${sentence(it.verified.type)} near ${titleCase(it.verified.where)}`}>
-                        <BadgeCheck size={11} aria-hidden="true" />
+                      <span className="cmd-tag" title={`SFPD dispatch: ${sentence(it.verified.type)} near ${titleCase(it.verified.where)}`}>
+                        <span className="cmd-dot" aria-hidden="true" />
                         Corroborated
                       </span>
                     )}
@@ -747,10 +639,10 @@ function EventFeed({ items, total, loading, onFocus }: { items: Item[]; total: n
           })}
         </ol>
       ) : (
-        <Empty icon={Radio} text={loading ? "Connecting to live feeds…" : "All quiet. Watching SFPD dispatch, phone sensors and traffic."} />
+        <Empty text={loading ? "Connecting to live feeds…" : "All quiet. Watching SFPD dispatch, phone sensors and traffic."} />
       )}
       <p className="cmd-sr" role="status">
-        {news ? `New ${KIND[news.kind].label.toLowerCase()}: ${news.title}, ${news.place}.` : ""}
+        {news ? `New ${KIND[news.kind].toLowerCase()}: ${news.title}, ${news.place}.` : ""}
       </p>
     </section>
   );
@@ -759,8 +651,8 @@ function EventFeed({ items, total, loading, onFocus }: { items: Item[]; total: n
 function Constellations({ list, onFocus }: { list: Constellation[]; onFocus: CommandProps["onFocus"] }) {
   const id = useId();
   return (
-    <section className="cmd-panel cmd-p-const" aria-labelledby={id}>
-      <Head id={id} icon={Sparkles} title="Incident constellations" meta={list.length ? plural(list.length, "chain") : undefined} />
+    <section className="cmd-panel cmd-flush cmd-p-const" aria-labelledby={id}>
+      <Head id={id} title="Incident constellations" meta={list.length ? plural(list.length, "chain") : undefined} />
       {list.length ? (
         <ol className="cmd-list">
           {list.slice(0, 4).map((c) => {
@@ -776,21 +668,20 @@ function Constellations({ list, onFocus }: { list: Constellation[]; onFocus: Com
                   onClick={() => first && onFocus(first.lng, first.lat, 16)}
                   aria-label={`${c.events.length} linked incidents near ${c.place}, mostly ${kind}, ${range}. Show on map.`}
                 >
-                  <span className="cmd-const-n">{c.events.length}</span>
+                  <span className="cmd-row-n">{c.events.length}</span>
                   <span className="cmd-row-main">
                     <strong>near {c.place}</strong>
                     <span>
                       mostly {kind} · {range}
                     </span>
                   </span>
-                  <LocateFixed className="cmd-go" size={13} aria-hidden="true" />
                 </button>
               </li>
             );
           })}
         </ol>
       ) : (
-        <Empty icon={Sparkles} text="No linked incident chains in the current data." />
+        <Empty text="No linked incident chains in the current data." />
       )}
     </section>
   );
@@ -800,32 +691,25 @@ function NextHour({ forecast, placeFor, onFocus }: { forecast: Forecast; placeFo
   const id = useId();
   const pct = forecast.now > 0 ? Math.round(((forecast.next - forecast.now) / forecast.now) * 100) : null;
   const by = new Date(Date.now() + 3600e3).toLocaleTimeString("en-US", { hour: "numeric" });
-  const dir = !pct ? "flat" : pct > 0 ? "up" : "down";
-  const Trend = dir === "down" ? TrendingDown : TrendingUp;
   const rising = forecast.rising.slice(0, 3);
   return (
-    <section className="cmd-panel cmd-p-next" aria-labelledby={id}>
-      <Head id={id} icon={TrendingUp} title="Next hour" meta={`by ${by}`} />
-      <p className={`cmd-next cmd-next-${dir}`}>
-        <span className="cmd-trend" aria-hidden="true">
-          <Trend size={15} />
-        </span>
-        <span>
-          {pct === null ? (
-            "Not enough history loaded to forecast yet."
-          ) : pct === 0 ? (
-            `Citywide risk holds steady through ${by}`
-          ) : (
-            <>
-              Citywide risk{" "}
-              <strong>
-                {pct > 0 ? "+" : "−"}
-                {Math.abs(pct)}%
-              </strong>{" "}
-              by {by}
-            </>
-          )}
-        </span>
+    <section className="cmd-panel cmd-flush cmd-p-next" aria-labelledby={id}>
+      <Head id={id} title="Next hour" meta={`by ${by}`} />
+      <p className="cmd-next">
+        {pct === null ? (
+          "Not enough history loaded to forecast yet."
+        ) : pct === 0 ? (
+          `Citywide risk holds steady through ${by}`
+        ) : (
+          <>
+            Citywide risk{" "}
+            <strong>
+              {pct > 0 ? "+" : "−"}
+              {Math.abs(pct)}%
+            </strong>{" "}
+            by {by}
+          </>
+        )}
       </p>
       {rising.length > 0 && (
         <ol className="cmd-list" aria-label="Blocks getting riskier fastest">
@@ -836,7 +720,7 @@ function NextHour({ forecast, placeFor, onFocus }: { forecast: Forecast; placeFo
             return (
               <li key={x.cell}>
                 <button type="button" className="cmd-row" disabled={!pt} onClick={() => pt && onFocus(pt.lng, pt.lat, 16)} aria-label={`${name}: risk up ${up} points in the next hour. Show on map.`}>
-                  <span className="cmd-rank">{String(i + 1).padStart(2, "0")}</span>
+                  <span className="cmd-row-n">{i + 1}</span>
                   <span className="cmd-row-main">
                     <strong>{name}</strong>
                   </span>
@@ -891,7 +775,6 @@ function HourChart({ calls, loading }: { calls: Call[]; loading: boolean }) {
     <div className="cmd-chart-wrap">
       <div className="cmd-ph">
         <h2 id={id} className="cmd-eyebrow">
-          <ChartColumn size={12} aria-hidden="true" />
           Violent calls by hour, last 24 h
         </h2>
         <p className="cmd-chart-stats" aria-hidden="true">
@@ -957,10 +840,7 @@ function LogTicker({ log, still }: { log: LogEntry[]; still: boolean }) {
   const style = { "--cmd-dur": `${Math.max(24, Math.round(chars * 0.16))}s` } as CSSProperties;
   return (
     <div className="cmd-ticker">
-      <span className="cmd-ticker-lbl">
-        <Activity size={12} aria-hidden="true" />
-        Engine
-      </span>
+      <span className="cmd-ticker-lbl">Engine</span>
       {items.length ? (
         <div className="cmd-ticker-view" role="marquee" aria-label="Latest engine log lines" tabIndex={0}>
           {/* Restart from the newest line whenever one arrives. */}

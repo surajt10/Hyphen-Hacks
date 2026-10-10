@@ -4,11 +4,12 @@
 // Click any spot on the map to see exactly how its risk was calculated.
 import { useEffect, useMemo, useState } from "react";
 import { cellToBoundary, cellToLatLng } from "h3-js";
-import { ArrowLeft, Crosshair, Radio, Activity, Satellite, Camera, Database, Siren, Sparkles, TrendingUp, TrendingDown, ShieldAlert, AudioWaveform, LayoutDashboard, History, ChartColumnBig } from "lucide-react";
+import { ArrowLeft, Crosshair, Satellite, LayoutDashboard, History, ChartColumnBig } from "lucide-react";
 import { MODES, MODE_MULT, TYPE_WEIGHT, contribution, type CellRisk, type Ev, type LiveZone, type Mode, LIVE_SCORE } from "@/lib/scoring";
 import { EVENT_LABEL } from "@/lib/i18n";
 import { fmtDate, fmtHour, placeOf } from "@/lib/format";
 import { MODE_ICON } from "./icons";
+import { qrMatrix, qrPath } from "@/lib/qr";
 import Galaxy from "./Galaxy";
 
 export type LogEntry = { t: number; text: string; kind?: "route" | "live" | "data" | "pick" };
@@ -160,7 +161,7 @@ export default function Engine(p: Props) {
         </div>
         <div className="eng-live">
           <span className="badge live">
-            <Radio size={12} /> LIVE
+            <span className="live-dot" aria-hidden /> Live
           </span>
           <span className="mono muted">{clock(now)}</span>
         </div>
@@ -227,7 +228,7 @@ export default function Engine(p: Props) {
 
             <section>
               <h3 className="eyebrow">
-                <Database size={12} /> Live data sources
+                Live data sources
               </h3>
               <ul className="feeds">
                 {(p.sources?.feeds ?? []).map((f) => (
@@ -254,7 +255,7 @@ export default function Engine(p: Props) {
             {p.sources && p.sources.recentCalls.length > 0 && (
               <section>
                 <h3 className="eyebrow">
-                  <Siren size={12} /> Latest violent calls (SFPD dispatch)
+                Latest violent calls (SFPD dispatch)
                 </h3>
                 <ol className="calls">
                   {p.sources.recentCalls.map((c, i) => (
@@ -271,7 +272,7 @@ export default function Engine(p: Props) {
 
             <section>
               <h3 className="eyebrow">
-                <Camera size={12} /> Live road cameras (Caltrans)
+                Live road cameras (Caltrans)
               </h3>
               <div className="cams live-cams">
                 {(p.sources?.cameras ?? []).slice(0, 4).map((c) => (
@@ -288,7 +289,7 @@ export default function Engine(p: Props) {
 
             <section>
               <h3 className="eyebrow">
-                <Satellite size={12} /> Satellite view of the map center (Esri)
+                Satellite view of the map center (Esri)
               </h3>
               <figure className="sat">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -403,7 +404,7 @@ export default function Engine(p: Props) {
 
             <section>
               <h3 className="eyebrow">
-                <Activity size={12} /> Engine log
+                Engine log
               </h3>
               <ol className="log mono">
                 {p.log.slice(0, 30).map((l, i) => (
@@ -589,7 +590,7 @@ function Intel(p: Props) {
     <>
       <section>
         <h3 className="eyebrow">
-          <ShieldAlert size={12} /> Live anomaly watch
+                Live anomaly watch
         </h3>
         {p.anomalies.length ? (
           <ul className="intel-list">
@@ -613,7 +614,7 @@ function Intel(p: Props) {
 
       <section>
         <h3 className="eyebrow">
-          <AudioWaveform size={12} /> Acoustic sensor grid
+                Acoustic sensor grid
         </h3>
         <div className="sensor-row">
           <div>
@@ -651,15 +652,15 @@ function Intel(p: Props) {
             </div>
           );
         })}
+        <JoinGrid />
         <p className="muted small-text">Listening phones report only area-level coverage. A phone that hears a bang shares its position for that alert, shown to others rounded to a ~0.01 sq mi cell. No audio or identities are stored.</p>
       </section>
 
       <section>
         <h3 className="eyebrow">
-          <TrendingUp size={12} /> Next-hour forecast
+                Next-hour forecast
         </h3>
         <p className="forecast-line">
-          {change >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
           <span>
             Citywide risk for {p.mode === "wheelchair" ? "wheelchair users" : p.mode} trips {change >= 0 ? "rises" : "falls"} <strong>{Math.abs(change)}%</strong> by {nextHour}
           </span>
@@ -680,22 +681,18 @@ function Intel(p: Props) {
 
       <section>
         <h3 className="eyebrow">
-          <Sparkles size={12} /> Incident constellations
+                Incident constellations
         </h3>
         <p className="muted small-text">Violent incidents within 500 ft and 12 hours of each other, linked into chains (gold lines on the map). Click one to see it.</p>
         <ol className="constellations">
           {p.constellations.slice(0, 8).map((c) => (
             <li key={c.id}>
               <button className={p.focusConst === c.id ? "on" : ""} onClick={() => p.onFocusConst(p.focusConst === c.id ? null : c.id)}>
-                <span className="c-star">
-                  <Sparkles size={14} />
-                </span>
+                <span className="c-count mono">{c.events.length}</span>
                 <span className="c-main">
-                  <strong>
-                    {c.events.length} linked incidents near {c.place}
-                  </strong>
+                  <strong>Near {c.place}</strong>
                   <span>
-                    {new Date(c.from).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    Linked incidents · {new Date(c.from).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
                     {c.to - c.from > 864e5 ? `–${new Date(c.to).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""} · mostly {LABEL[c.top].toLowerCase()} · {(c.spanKm * 0.621371).toFixed(2)} mi of links
                   </span>
                 </span>
@@ -706,5 +703,52 @@ function Intel(p: Props) {
         </ol>
       </section>
     </>
+  );
+}
+
+// "Add a phone": a QR code and link that open NorthStar with the listen prompt, so anyone in
+// the room can join the sensor grid in two taps.
+export function JoinGrid() {
+  const [url, setUrl] = useState("");
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    const own = `${location.origin}/?listen=1`;
+    if (!local) return setUrl(own);
+    fetch("/api/join")
+      .then((r) => r.json())
+      .then((j) => setUrl(j.url ?? own))
+      .catch(() => setUrl(own));
+  }, []);
+  const path = useMemo(() => {
+    const m = url ? qrMatrix(url) : null;
+    return m ? qrPath(m) : null;
+  }, [url]);
+  if (!url) return null;
+  return (
+    <div className="join-grid">
+      {path && (
+        <svg viewBox={`0 0 ${path.size} ${path.size}`} className="join-qr" role="img" aria-label="QR code that opens NorthStar ready to listen" shapeRendering="crispEdges">
+          <rect width={path.size} height={path.size} fill="#fff" />
+          <path d={path.d} fill="#000" />
+        </svg>
+      )}
+      <div className="join-text">
+        <strong>Add a phone</strong>
+        <span>Scan the code or open the link on any phone, then tap Start listening. It counts here within 20 seconds.</span>
+        <code className="mono">{url.replace(/^https?:\/\//, "")}</code>
+        <button
+          className="btn"
+          onClick={() =>
+            navigator.clipboard?.writeText(url).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            })
+          }
+        >
+          {copied ? "Copied" : "Copy link"}
+        </button>
+      </div>
+    </div>
   );
 }
