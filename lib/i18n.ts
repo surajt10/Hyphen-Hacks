@@ -8,7 +8,7 @@ export const LANGS: { id: Lang; label: string }[] = [
 
 const en = {
   tagline: "Safer routes for every way you move",
-  search: "Search a place in San Francisco",
+  search: "Search the Bay Area",
   chooseStart: "Choose starting point",
   yourLocation: "Your location",
   directions: "Directions",
@@ -67,7 +67,7 @@ const en = {
   confirmed: "Multiple people reported a gunshot",
   rerouted: "Route updated to avoid a live alert",
   aboutData: "About the data",
-  dataNote: "Risk uses SF police dispatch calls for violence (Jul–Oct 2026) and injury crashes (last 2 years). It's recent, not live. Live alerts come from NorthStar users.",
+  dataNote: "Risk uses SF police dispatch calls for violence (Jul–Oct 2026), Oakland police reports (past year) and injury crashes across 9 Bay Area counties (2025–2026). It's recent, not live. Live alerts come from NorthStar users.",
   finding: "Finding routes…",
   noRoute: "No route found. Try another place.",
   droppedPin: "Dropped pin",
@@ -89,7 +89,7 @@ type Dict = typeof en;
 
 const es: Dict = {
   tagline: "Rutas más seguras para cada forma de moverte",
-  search: "Busca un lugar en San Francisco",
+  search: "Busca en el Área de la Bahía",
   chooseStart: "Elige el punto de partida",
   yourLocation: "Tu ubicación",
   directions: "Cómo llegar",
@@ -148,7 +148,7 @@ const es: Dict = {
   confirmed: "Varias personas reportaron un disparo",
   rerouted: "Ruta actualizada para evitar una alerta",
   aboutData: "Sobre los datos",
-  dataNote: "El riesgo usa llamadas a la policía de SF por violencia (jul–oct 2026) y choques con heridos (últimos 2 años). Datos recientes, no en vivo. Las alertas en vivo vienen de usuarios.",
+  dataNote: "El riesgo usa llamadas a la policía de SF por violencia (jul–oct 2026), reportes de la policía de Oakland (último año) y choques con heridos en 9 condados del Área de la Bahía (2025–2026). Datos recientes, no en vivo. Las alertas en vivo vienen de usuarios.",
   finding: "Buscando rutas…",
   noRoute: "No se encontró ruta. Prueba otro lugar.",
   droppedPin: "Marcador",
@@ -168,7 +168,7 @@ const es: Dict = {
 
 const pt: Dict = {
   tagline: "Rotas mais seguras para cada jeito de se mover",
-  search: "Busque um lugar em San Francisco",
+  search: "Pesquise na Área da Baía",
   chooseStart: "Escolha o ponto de partida",
   yourLocation: "Sua localização",
   directions: "Rotas",
@@ -227,7 +227,7 @@ const pt: Dict = {
   confirmed: "Várias pessoas reportaram um tiro",
   rerouted: "Rota atualizada para evitar um alerta",
   aboutData: "Sobre os dados",
-  dataNote: "O risco usa chamadas à polícia de SF por violência (jul–out 2026) e acidentes com feridos (últimos 2 anos). Dados recentes, não ao vivo. Alertas ao vivo vêm de usuários.",
+  dataNote: "O risco usa chamadas à polícia de SF por violência (jul–out 2026), boletins da polícia de Oakland (último ano) e acidentes com feridos em 9 condados da Área da Baía (2025–2026). Dados recentes, não ao vivo. Alertas ao vivo vêm de usuários.",
   finding: "Buscando rotas…",
   noRoute: "Rota não encontrada. Tente outro lugar.",
   droppedPin: "Alfinete",
@@ -247,7 +247,7 @@ const pt: Dict = {
 
 const zh: Dict = {
   tagline: "为每一种出行方式提供更安全的路线",
-  search: "搜索旧金山的地点",
+  search: "搜索湾区",
   chooseStart: "选择出发地",
   yourLocation: "你的位置",
   directions: "路线",
@@ -306,7 +306,7 @@ const zh: Dict = {
   confirmed: "多人报告枪声",
   rerouted: "路线已更新，避开实时警报",
   aboutData: "关于数据",
-  dataNote: "风险基于旧金山警方暴力类出警记录（2026年7–10月）和伤人交通事故（近2年）。近期数据，非实时。实时警报来自用户。",
+  dataNote: "风险基于旧金山警方暴力类出警记录（2026年7–10月）、奥克兰警方报告（近一年）以及湾区9个县的伤人交通事故（2025–2026年）。近期数据，非实时。实时警报来自用户。",
   finding: "正在查找路线…",
   noRoute: "未找到路线，请换个地点。",
   droppedPin: "已放置的标记",

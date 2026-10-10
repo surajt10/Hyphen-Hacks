@@ -4,10 +4,10 @@
 // Click any spot on the map to see exactly how its risk was calculated.
 import { useEffect, useMemo, useState } from "react";
 import { cellToBoundary, cellToLatLng } from "h3-js";
-import { ArrowLeft, Crosshair, Radio, Activity, Satellite, Camera, Database, Siren } from "lucide-react";
+import { ArrowLeft, Crosshair, Radio, Activity, Satellite, Camera, Database, Siren, Sparkles, TrendingUp, TrendingDown, ShieldAlert, AudioWaveform } from "lucide-react";
 import { MODES, MODE_MULT, TYPE_WEIGHT, contribution, type CellRisk, type Ev, type LiveZone, type Mode, LIVE_SCORE } from "@/lib/scoring";
 import { EVENT_LABEL } from "@/lib/i18n";
-import { fmtDate, fmtHour } from "@/lib/format";
+import { fmtDate, fmtHour, placeOf } from "@/lib/format";
 import { MODE_ICON } from "./icons";
 import Galaxy from "./Galaxy";
 
@@ -17,7 +17,8 @@ export type Sources = {
   feeds: { id: string; name: string; provider: string; ok: boolean; ms: number; value?: string; detail: string; updated?: string }[];
   recentCalls: { t?: string; type: string; where: string }[];
   cameras: { name: string; img: string; lat: number; lng: number }[];
-  weather: { isDay: boolean; sunset: string } | null;
+  weather: { isDay: boolean; sunset: string; rain?: number } | null;
+  calls24?: Call[];
 };
 
 type Props = {
@@ -37,6 +38,13 @@ type Props = {
   sources: Sources | null;
   center: [number, number];
   theme: "light" | "dark";
+  constellations: Constellation[];
+  focusConst: number | null;
+  onFocusConst: (id: number | null) => void;
+  forecast: Forecast;
+  anomalies: Anomaly[];
+  sensors: { phones: number; cells: { cell: string; n: number }[] };
+  corroborated: Map<string, Call>;
 };
 
 const LABEL = EVENT_LABEL.en;
@@ -49,6 +57,7 @@ const fmt = (n: number, d = 2) => (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed
 const clock = (t: number) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
 
 import { satellite } from "@/lib/sat";
+import type { Anomaly, Call, Constellation, Forecast } from "@/lib/intel";
 
 function useCountUp(target: number, key: string) {
   const [v, setV] = useState(0);
@@ -187,13 +196,15 @@ export default function Engine(p: Props) {
             </p>
 
             <div className="tiles">
-              <Tile label="Violent calls, last 7 days" value={stats.calls7} note={stats.callsPrev7 ? `${trend >= 0 ? "▲" : "▼"} ${Math.abs(trend)}% vs prior week` : undefined} />
+              <Tile label="Violent incidents, last 7 days" value={stats.calls7} note={stats.callsPrev7 ? `${trend >= 0 ? "▲" : "▼"} ${Math.abs(trend)}% vs prior week` : undefined} />
               <Tile label="Injury crashes, 2 years" value={stats.crash.ped + stats.crash.bike + stats.crash.vehicle + stats.crash.moto} note={`${stats.crash.fatal} fatal`} />
               <Tile label="Blocks with risk" value={p.cells.size} note="0.04 sq mi each" />
               <Tile label="Live alerts now" value={p.zones.length} />
               <Tile label="Riskiest hour" text={fmtHour(stats.peakHour)} note={`for ${MODE_NAME[p.mode].toLowerCase()}`} />
               <Tile label="Riskiest day" text={DAYS[stats.peakDay]} note="by weighted risk" />
             </div>
+
+            <Intel {...p} />
 
             <section>
               <h3 className="eyebrow">
@@ -258,14 +269,14 @@ export default function Engine(p: Props) {
 
             <section>
               <h3 className="eyebrow">
-                <Satellite size={12} /> Satellite view of the map center (USGS)
+                <Satellite size={12} /> Satellite view of the map center (Esri)
               </h3>
               <figure className="sat">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={sat.url} alt="USGS aerial imagery of the map center" />
+                <img src={sat.url} alt="Satellite imagery of the map center" />
                 <span className="sat-cross" aria-hidden />
                 <figcaption className="mono">
-                  {p.center[1].toFixed(4)}°N, {Math.abs(p.center[0]).toFixed(4)}°W · USGS National Map
+                  {p.center[1].toFixed(4)}°N, {Math.abs(p.center[0]).toFixed(4)}°W · Esri World Imagery
                 </figcaption>
               </figure>
             </section>
@@ -437,7 +448,7 @@ function CellView(p: Props & { cell: string; scores: number[]; minute: number })
 
       <figure className="sat cell-sat">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={sat.url} alt="USGS aerial imagery of this block" />
+        <img src={sat.url} alt="Satellite imagery of this block" />
         <svg viewBox={`0 0 ${sat.W} ${sat.H}`} aria-hidden>
           <polygon points={hexPts} className="sat-hex" />
           {evPts.map((e, i) => (
@@ -534,5 +545,142 @@ function CellView(p: Props & { cell: string; scores: number[]; minute: number })
         <strong className={decision}>{decision === "avoid" ? "routes avoid this block" : decision === "penalize" ? "routes pay a penalty here" : "no effect on routes"}</strong>
       </div>
     </div>
+  );
+}
+
+// Situational awareness: anomaly watch, the phone sensor grid with dispatch corroboration,
+// a next-hour forecast and incident constellations. Events and places only, never people.
+function Intel(p: Props) {
+  const placeFor = (cell: string) => {
+    const evs = p.cells.get(cell)?.events ?? [];
+    const m = new Map<string, number>();
+    for (const e of evs) {
+      const s = placeOf(e.x);
+      m.set(s, (m.get(s) ?? 0) + 1);
+    }
+    return [...m].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "this block";
+  };
+  const change = p.forecast.now > 0 ? Math.round(((p.forecast.next - p.forecast.now) / p.forecast.now) * 100) : 0;
+  const nextHour = new Date(Date.now() + 3600e3).toLocaleTimeString("en-US", { hour: "numeric" });
+  const sounds = p.zones.filter((z) => z.kind === "sound");
+  const nearestCam = (lat: number, lng: number) =>
+    (p.sources?.cameras ?? []).map((c) => ({ ...c, d: Math.hypot((c.lng - lng) * 88, (c.lat - lat) * 111) * 0.621371 })).sort((a, b) => a.d - b.d)[0];
+
+  return (
+    <>
+      <section>
+        <h3 className="eyebrow">
+          <ShieldAlert size={12} /> Live anomaly watch
+        </h3>
+        {p.anomalies.length ? (
+          <ul className="intel-list">
+            {p.anomalies.slice(0, 4).map((a) => (
+              <li key={a.cell} className="intel-item warn-item">
+                <strong>
+                  {a.n} violent calls in 3 h near {a.calls[0].where.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase())}
+                </strong>
+                <span>
+                  Normal for this area: about {a.expected < 0.1 ? "0" : a.expected.toFixed(1)} · {Math.round(a.n / Math.max(a.expected, 0.15))}× higher than usual
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="intel-calm">
+            No unusual activity. Checked {(p.sources?.calls24 ?? []).length} violent dispatch calls from the last 24 h against each area&apos;s normal rate.
+          </p>
+        )}
+      </section>
+
+      <section>
+        <h3 className="eyebrow">
+          <AudioWaveform size={12} /> Acoustic sensor grid
+        </h3>
+        <div className="sensor-row">
+          <div>
+            <span className="mono num">{p.sensors.phones}</span>
+            <span className="lbl">phones listening</span>
+          </div>
+          <div>
+            <span className="mono num">{p.sensors.cells.length}</span>
+            <span className="lbl">areas covered</span>
+          </div>
+          <div>
+            <span className="mono num">{sounds.length}</span>
+            <span className="lbl">live sound alerts</span>
+          </div>
+        </div>
+        {sounds.map((z) => {
+          const c = p.corroborated.get(z.id);
+          const cam = nearestCam(z.lat, z.lng);
+          return (
+            <div key={z.id} className={`intel-item ${c ? "confirmed" : z.level === "confirmed" ? "warn-item" : ""}`}>
+              <strong>
+                {z.level === "confirmed" ? "Confirmed" : "Possible"} gunshot · {z.count} {z.count === 1 ? "phone" : "phones"} · {new Date(z.ts).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+              </strong>
+              <span>{c ? `Corroborated by SFPD dispatch: "${c.type.toLowerCase()}" at ${c.where.toLowerCase()}` : "Watching SFPD dispatch for a matching shots-fired call (0.4 mi, 20 min)…"}</span>
+              {cam && cam.d < 3 && (
+                <span>
+                  Nearest public road camera: {cam.name} ({cam.d.toFixed(1)} mi)
+                </span>
+              )}
+            </div>
+          );
+        })}
+        <p className="muted small-text">Phones report only area-level coverage; no audio, identities or exact positions are stored.</p>
+      </section>
+
+      <section>
+        <h3 className="eyebrow">
+          <TrendingUp size={12} /> Next-hour forecast
+        </h3>
+        <p className="forecast-line">
+          {change >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+          <span>
+            Citywide risk for {p.mode === "wheelchair" ? "wheelchair users" : p.mode} trips {change >= 0 ? "rises" : "falls"} <strong>{Math.abs(change)}%</strong> by {nextHour}
+          </span>
+        </p>
+        <ol className="hot forecast-list">
+          {p.forecast.rising.slice(0, 5).map((x, i) => (
+            <li key={x.cell}>
+              <button onClick={() => p.onSelect(x.cell, true)}>
+                <span className="mono rank">{String(i + 1).padStart(2, "0")}</span>
+                <span className="top">{placeFor(x.cell)}</span>
+                <span className="mono val up">+{(x.next - x.now).toFixed(1)}</span>
+              </button>
+            </li>
+          ))}
+        </ol>
+        <p className="muted small-text">Orange hexagons on the map are the blocks getting riskier in the next hour.</p>
+      </section>
+
+      <section>
+        <h3 className="eyebrow">
+          <Sparkles size={12} /> Incident constellations
+        </h3>
+        <p className="muted small-text">Violent incidents within 500 ft and 12 hours of each other, linked into chains (gold lines on the map). Click one to see it.</p>
+        <ol className="constellations">
+          {p.constellations.slice(0, 8).map((c) => (
+            <li key={c.id}>
+              <button className={p.focusConst === c.id ? "on" : ""} onClick={() => p.onFocusConst(p.focusConst === c.id ? null : c.id)}>
+                <span className="c-star">
+                  <Sparkles size={14} />
+                </span>
+                <span className="c-main">
+                  <strong>
+                    {c.events.length} linked incidents near {c.place}
+                  </strong>
+                  <span>
+                    {new Date(c.from).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    {c.to - c.from > 864e5 ? `–${new Date(c.to).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""} · mostly {LABEL[c.top].toLowerCase()} · {(c.spanKm * 0.621371).toFixed(2)} mi of links
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+          {!p.constellations.length && <li className="muted">No linked incident chains in the current data.</li>}
+        </ol>
+      </section>
+    </>
   );
 }

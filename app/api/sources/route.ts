@@ -28,7 +28,7 @@ export async function GET() {
   const since = new Date(Date.now() - 24 * 3600e3).toISOString().slice(0, 19);
   const since7 = new Date(Date.now() - 7 * 24 * 3600e3).toISOString().slice(0, 19);
 
-  const [calls, latest, crashes, weather, bart, fires, cams, router] = await Promise.all([
+  const [calls, latest, crashes, weather, bart, fires, cams, router, calls24] = await Promise.all([
     timed(() => json(`https://data.sf.gov/resource/gnap-fj3t.json?$select=count(*)&$where=${encodeURIComponent(`received_datetime > '${since}' AND ${VIOLENT}`)}`)),
     timed(() => json(`https://data.sf.gov/resource/gnap-fj3t.json?$select=received_datetime,call_type_final_desc,intersection_name,data_as_of&$where=${encodeURIComponent(`intersection_point IS NOT NULL AND received_datetime > '${since7}' AND ${VIOLENT}`)}&$order=received_datetime DESC&$limit=6`)),
     timed(() => json(`https://data.sf.gov/resource/ubvf-ztfx.json?$select=max(collision_datetime) as last,max(data_as_of) as asof`)),
@@ -48,6 +48,8 @@ export async function GET() {
       const r = await fetch("https://valhalla1.openstreetmap.de/status", { cache: "no-store" });
       return r.json();
     }),
+    // Every located violent call in the last 24 h: feeds anomaly detection and alert corroboration.
+    timed(() => json(`https://data.sf.gov/resource/gnap-fj3t.json?$select=received_datetime,call_type_final_desc,intersection_name,intersection_point&$where=${encodeURIComponent(`intersection_point IS NOT NULL AND received_datetime > '${since}' AND ${VIOLENT}`)}&$order=received_datetime DESC&$limit=400`)),
   ]);
 
   const fmtTime = (iso?: string) => (iso ? new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Los_Angeles" }) : undefined);
@@ -148,7 +150,14 @@ export async function GET() {
     feeds,
     recentCalls: (lv ?? []).map((c) => ({ t: fmtTime(c.received_datetime), type: c.call_type_final_desc, where: c.intersection_name.replace(/\\+/g, "&") })),
     cameras: liveCams.slice(0, 8).map((c) => ({ name: c.location.locationName.replace(/^TV\d+ -- /, ""), img: c.imageData.static.currentImageURL, lat: +c.location.latitude, lng: +c.location.longitude })),
-    weather: wv ? { isDay: !!wv.current.is_day, sunset: wv.daily.sunset[0] } : null,
+    weather: wv ? { isDay: !!wv.current.is_day, sunset: wv.daily.sunset[0], rain: wv.current.precipitation } : null,
+    calls24: ((calls24.v as { received_datetime: string; call_type_final_desc: string; intersection_name: string; intersection_point: { coordinates: [number, number] } }[] | undefined) ?? []).map((c) => ({
+      ts: Date.parse(c.received_datetime + "-07:00"),
+      type: c.call_type_final_desc,
+      where: c.intersection_name.replace(/\\+/g, "&"),
+      lng: c.intersection_point.coordinates[0],
+      lat: c.intersection_point.coordinates[1],
+    })),
   };
   cache.at = Date.now();
   cache.data = data;

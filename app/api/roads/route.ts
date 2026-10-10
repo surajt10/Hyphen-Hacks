@@ -36,19 +36,6 @@ async function refresh() {
         return (c.inService as unknown as string) === "true" && img ? { name: loc.locationName, lng: +loc.longitude, lat: +loc.latitude, img } : null;
       })
       .filter(Boolean);
-    // Drop cameras currently showing Caltrans's "Temporarily Unavailable" image (~13.4 KB).
-    const checked = await Promise.all(
-      cache.cams.filter((c) => c.lat > 37.7 && c.lat < 37.83 && c.lng > -122.52 && c.lng < -122.35).map(async (c) => {
-        try {
-          const r = await fetch(c.img, { headers: HEADERS, cache: "no-store" });
-          const size = (await r.arrayBuffer()).byteLength;
-          return size > 13300 && size < 13600 ? null : c;
-        } catch {
-          return null;
-        }
-      }),
-    );
-    cache.cams = checked.filter((c): c is Camera => !!c);
   } catch (err) {
     console.error("cctv", String(err).slice(0, 200));
   }
@@ -80,10 +67,28 @@ async function refresh() {
   }
 }
 
+// Cameras showing Caltrans's "Temporarily Unavailable" image (~13.4 KB) are dropped; each
+// camera's check is cached for 5 minutes so only cameras near a route are ever fetched.
+const live = ((globalThis as unknown as { __ns_camok?: Map<string, { at: number; ok: boolean }> }).__ns_camok ??= new Map());
+async function isLive(c: Camera) {
+  const hit = live.get(c.img);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.ok;
+  let ok = false;
+  try {
+    const r = await fetch(c.img, { headers: HEADERS, cache: "no-store" });
+    const size = (await r.arrayBuffer()).byteLength;
+    ok = r.ok && !(size > 13300 && size < 13600);
+  } catch {}
+  live.set(c.img, { at: Date.now(), ok });
+  return ok;
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const [w, s, e, n] = (url.searchParams.get("bbox") ?? "-122.52,37.70,-122.35,37.83").split(",").map(Number);
   await refresh();
   const inBox = (p: { lng: number; lat: number }) => p.lng > w && p.lng < e && p.lat > s && p.lat < n;
-  return Response.json({ cameras: cache.cams.filter(inBox), closures: cache.closures.filter(inBox), asOf: cache.at });
+  const near = cache.cams.filter(inBox).slice(0, 24);
+  const ok = await Promise.all(near.map(isLive));
+  return Response.json({ cameras: near.filter((_, i) => ok[i]), closures: cache.closures.filter(inBox), asOf: cache.at });
 }

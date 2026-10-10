@@ -12,6 +12,15 @@ export const CATEGORIES: Record<string, { label: string; tags: string[]; words: 
   gas: { label: "Gas", tags: ["amenity:fuel"], words: /^(gas|gas stations?|fuel)$/ },
   parking: { label: "Parking", tags: ["amenity:parking"], words: /^(parking|garages?)$/ },
   police: { label: "Police", tags: ["amenity:police"], words: /^(police|police stations?)$/ },
+  todo: { label: "Things to do", tags: ["tourism:attraction", "tourism:museum", "tourism:gallery", "amenity:theatre", "amenity:cinema", "tourism:zoo", "tourism:aquarium"], words: /^(things to do|attractions?|fun|sightseeing|tourist)$/ },
+  museum: { label: "Museums", tags: ["tourism:museum", "tourism:gallery"], words: /^(museums?|galler(y|ies)|art)$/ },
+  park: { label: "Parks", tags: ["leisure:park", "leisure:garden"], words: /^(parks?|gardens?|green space)$/ },
+  shopping: { label: "Shopping", tags: ["shop:mall", "shop:department_store", "shop:clothes"], words: /^(shopping|malls?|stores?|clothes)$/ },
+  gym: { label: "Gyms", tags: ["leisure:fitness_centre", "leisure:sports_centre"], words: /^(gyms?|fitness|workout)$/ },
+  library: { label: "Libraries", tags: ["amenity:library"], words: /^(librar(y|ies)|books?)$/ },
+  ev: { label: "EV charging", tags: ["amenity:charging_station"], words: /^(ev|ev charging|chargers?|charging stations?)$/ },
+  restroom: { label: "Restrooms", tags: ["amenity:toilets"], words: /^(restrooms?|bathrooms?|toilets?)$/ },
+  bikeshare: { label: "Bike share", tags: ["amenity:bicycle_rental"], words: /^(bike share|bike rental|bay wheels|lime)$/ },
 };
 
 export const categoryFor = (q: string) => {
@@ -19,7 +28,7 @@ export const categoryFor = (q: string) => {
   return Object.keys(CATEGORIES).find((k) => CATEGORIES[k].words.test(s)) ?? null;
 };
 
-type Found = { name: string; lat: number; lng: number; addr: string; dist: number };
+type Found = { name: string; lat: number; lng: number; addr: string; dist: number; tag: string };
 const cache = new Map<string, { at: number; items: Found[] }>();
 
 function miles(a: [number, number], b: [number, number]) {
@@ -41,7 +50,7 @@ export async function nearbyByTags(tags: string[], lat: number, lng: number, lim
     .map((f) => {
       const p = f.properties;
       const c = f.geometry.coordinates;
-      return { name: p.name, lng: c[0], lat: c[1], addr: [p.housenumber, p.street].filter(Boolean).join(" "), dist: miles([lng, lat], c) };
+      return { name: p.name, lng: c[0], lat: c[1], addr: [p.housenumber, p.street].filter(Boolean).join(" "), dist: miles([lng, lat], c), tag: `${p.osm_key}:${p.osm_value}` };
     })
     .sort((a, b) => a.dist - b.dist);
   cache.set(key, { at: Date.now(), items });

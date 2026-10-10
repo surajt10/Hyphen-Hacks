@@ -81,6 +81,31 @@ const toRoute = (trip: Trip) => {
   return { coords, minutes: trip.summary.time / 60, mi: trip.summary.length, steps };
 };
 
+// Live traffic (optional): with TOMTOM_API_KEY set, car and moped times are scaled by TomTom's
+// real-time travel time for the same trip. Without a key we use the time-of-day model above.
+const liveCache = ((globalThis as unknown as { __ns_tt?: Map<string, { at: number; minutes: number }> }).__ns_tt ??= new Map());
+async function trafficFor(body: Body, freeFlowMinutes: number): Promise<{ f: number; source: "live" | "model" | "none" }> {
+  if (body.mode !== "car" && body.mode !== "moped") return { f: 1, source: "none" };
+  const depart = body.depart ? new Date(body.depart) : new Date();
+  const key = process.env.TOMTOM_API_KEY;
+  if (key) {
+    const id = `${body.from.map((n) => n.toFixed(3))}:${body.to.map((n) => n.toFixed(3))}:${Math.round(depart.getTime() / 300000)}`;
+    try {
+      let hit = liveCache.get(id);
+      if (!hit || Date.now() - hit.at > 120_000) {
+        const when = depart.getTime() - Date.now() > 5 * 60_000 ? encodeURIComponent(depart.toISOString().slice(0, 19) + "Z") : "now";
+        const url = `https://api.tomtom.com/routing/1/calculateRoute/${body.from[1]},${body.from[0]}:${body.to[1]},${body.to[0]}/json?key=${key}&traffic=true&travelMode=car&departAt=${when}`;
+        const j = await fetch(url, { cache: "no-store" }).then((r) => r.json());
+        hit = { at: Date.now(), minutes: j.routes[0].summary.travelTimeInSeconds / 60 };
+        liveCache.set(id, hit);
+      }
+      const f = Math.min(3, Math.max(0.8, hit.minutes / freeFlowMinutes));
+      return { f: body.mode === "moped" ? 1 + (f - 1) * 0.8 : f, source: "live" };
+    } catch {}
+  }
+  return { f: trafficFactor(body.mode, depart), source: "model" };
+}
+
 const localIso = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
 async function valhalla(body: Body, exclude?: [number, number][][]) {
@@ -105,8 +130,8 @@ async function valhalla(body: Body, exclude?: [number, number][][]) {
   const json = await res.json();
   if (!res.ok || !json.trip) throw new Error(json.error ?? `Valhalla ${res.status}`);
   const trips: Trip[] = [json.trip, ...(json.alternates ?? []).map((a: { trip: Trip }) => a.trip)];
-  const f = trafficFactor(body.mode, body.depart ? new Date(body.depart) : new Date());
-  return trips.map(toRoute).map((r) => ({ ...r, minutes: r.minutes * f, traffic: f }));
+  const { f, source } = await trafficFor(body, trips[0].summary.time / 60);
+  return trips.map(toRoute).map((r) => ({ ...r, minutes: r.minutes * f, traffic: f, trafficSource: source }));
 }
 
 export async function POST(request: Request) {

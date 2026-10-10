@@ -1,6 +1,7 @@
 // Live layer shared by every phone: sound detections and community reports.
 // Kept in server memory (fine for a single demo server). Phones poll GET every ~1.5 s.
 import type { LiveZone } from "@/lib/scoring";
+import { latLngToCell } from "h3-js";
 
 type Raw = {
   id: string;
@@ -16,6 +17,22 @@ type Raw = {
 };
 
 const store = ((globalThis as unknown as { __ns_live?: Raw[] }).__ns_live ??= []);
+
+// Phones with "listen for gunshots" on check in every ~20 s. Only area-level counts are ever
+// returned (H3 cells about 0.3 sq mi), never a device's position.
+const listeners = ((globalThis as unknown as { __ns_listen?: Map<string, { lat: number; lng: number; ts: number }> }).__ns_listen ??= new Map());
+function sensors(now: number) {
+  const cells = new Map<string, number>();
+  for (const [id, l] of listeners) {
+    if (now - l.ts > 60_000) {
+      listeners.delete(id);
+      continue;
+    }
+    const c = latLngToCell(l.lat, l.lng, 8);
+    cells.set(c, (cells.get(c) ?? 0) + 1);
+  }
+  return { phones: [...cells.values()].reduce((a, b) => a + b, 0), cells: [...cells].map(([cell, n]) => ({ cell, n })) };
+}
 
 const MIN = 60_000;
 const TTL = {
@@ -98,7 +115,8 @@ function zones(now: number) {
 }
 
 export async function GET() {
-  return Response.json({ zones: zones(Date.now()), now: Date.now() });
+  const now = Date.now();
+  return Response.json({ zones: zones(now), sensors: sensors(now), now });
 }
 
 export async function POST(request: Request) {
@@ -138,6 +156,11 @@ export async function POST(request: Request) {
       if (ev && !ev.votes.some((v) => v.device === b.device)) ev.votes.push({ device: b.device, vote: b.vote });
     }
     return Response.json({ ok: true, zones: zones(now) });
+  }
+  if (b.action === "listen") {
+    if (b.off) listeners.delete(String(b.device));
+    else listeners.set(String(b.device), { lat: +b.lat, lng: +b.lng, ts: now });
+    return Response.json({ ok: true, sensors: sensors(now) });
   }
   if (b.action === "reset") {
     store.length = 0;

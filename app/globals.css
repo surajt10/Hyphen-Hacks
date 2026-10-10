@@ -2823,3 +2823,189 @@ button {
     height: 60px;
   }
 }
+
+/* ---------- v5: satellite toggle, why tags, nav why, intel ---------- */
+.icon-btn.pressed {
+  background: var(--accent);
+  color: #fff;
+}
+.why-tag {
+  justify-self: start;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.why-tag.avoided {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+.why-tag.onroute {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.why-badge.calm {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.why.compact {
+  border: 0;
+  padding: 12px 14px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.nav-why {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 132px;
+  width: min(560px, calc(100vw - 24px));
+  border-radius: 16px;
+  z-index: 9;
+  overflow: hidden;
+}
+.ns-actions {
+  display: grid;
+  gap: 6px;
+}
+.ns-actions .btn {
+  justify-content: center;
+  padding: 7px 12px;
+  font-size: 13px;
+}
+.ns-actions .btn.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.intel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.intel-item {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-2);
+  animation: fade-in 0.4s ease-out both;
+}
+.intel-item strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.intel-item.warn-item {
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+.intel-item.confirmed {
+  border-left-color: var(--ok);
+}
+.intel-calm {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ok) 8%, var(--surface));
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.sensor-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.sensor-row > div {
+  display: grid;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.sensor-row .num {
+  font-size: 20px;
+  color: #2fbf71;
+}
+.sensor-row .lbl {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.forecast-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+}
+.forecast-line svg {
+  color: #f29900;
+  flex: 0 0 auto;
+}
+.hot .val.up {
+  color: #f29900;
+}
+.constellations {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.constellations button {
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.constellations button:hover,
+.constellations button.on {
+  border-color: #f2b544;
+  box-shadow: 0 0 0 1px #f2b544, 0 0 18px rgba(255, 210, 122, 0.25);
+}
+.c-star {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 210, 122, 0.18);
+  color: #c58a00;
+  flex: 0 0 auto;
+}
+:root[data-theme="dark"] .c-star {
+  color: #ffd27a;
+}
+.c-main {
+  display: grid;
+  gap: 2px;
+}
+.c-main strong {
+  font-weight: 500;
+}
+.c-main span {
+  font-size: 12px;
+  color: var(--text-2);
+}
+@media (max-width: 760px) {
+  .nav-why {
+    bottom: 150px;
+  }
+}
+
+.hot.forecast-list button {
+  grid-template-columns: 26px 1fr 56px;
+}

@@ -17,9 +17,10 @@ export const fmtAgo = (t: number) => {
 };
 
 // "Fight No Weapon call, 16th St & Hoff St" -> "16th St & Hoff St"
+// "Robbery, 300 block Oak St, Oakland" -> "300 Block Oak St" (Bay Area data ends with the city)
 export const placeOf = (desc: string) => {
-  const i = desc.lastIndexOf(", ");
-  const s = i >= 0 ? desc.slice(i + 2) : desc;
+  const parts = desc.split(", ");
+  const s = parts.length >= 3 ? parts[parts.length - 2] : parts[parts.length - 1];
   return s
     .toLowerCase()
     .replace(/\b0(\d)/g, "$1")

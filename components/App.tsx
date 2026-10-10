@@ -44,7 +44,9 @@ import { SoundWatcher, type Detection } from "@/lib/sound";
 import { categoryFor, nearbyByTags, searchCategory } from "@/lib/places";
 import { fmtAgo, fmtDate, fmtDist, fmtHour, peakWindow, placeOf } from "@/lib/format";
 import Engine, { type LogEntry, type Sources } from "./Engine";
-import { CAT, CAT_UI, MODE_ICON } from "./icons";
+import { CAT, CAT_UI, CHIP_ORDER, MODE_ICON } from "./icons";
+import { addPoiIcons, MAP_POI, POI_OF_TAG } from "./mapIcons";
+import { corroborate, detectAnomalies, findConstellations, forecastNextHour, type Call } from "@/lib/intel";
 import Galaxy from "./Galaxy";
 import { satellite } from "@/lib/sat";
 
@@ -57,12 +59,13 @@ type Scored = Route & { risk: number };
 type Avoided = { cell: string; score: number; events: Ev[]; live?: LiveZone };
 type Camera = { name: string; lng: number; lat: number; img: string };
 type Roads = { cameras: Camera[]; closures: { name: string; lng: number; lat: number; lng2: number; lat2: number; type: string }[] };
-type Result = { safer: Scored; fastest: Scored; avoided: Avoided[]; timeline: { offset: number; risk: number }[]; cams: Camera[] };
+type Result = { safer: Scored; fastest: Scored; avoided: Avoided[]; passes: Avoided[]; timeline: { offset: number; risk: number }[]; cams: Camera[] };
 type ListId = "fav" | "want" | "saved";
 type ZoneInfo = { cell8: string; place: string; calls: number; crashes: number; topType: string; peak: string; last: string; rankPct: number; level: string; bestCell: string };
 type LayerState = { satellite: boolean; buildings: boolean; night: boolean; zones: boolean };
 
-const CITY = { center: [-122.4294, 37.7649] as [number, number], bbox: [-122.52, 37.7, -122.35, 37.83], data: "/data/sf-events.json" };
+// The Bay Area: SF has the richest data; nearby cities come from bay-events.json when present.
+const CITY = { center: [-122.4294, 37.7649] as [number, number], bbox: [-122.75, 37.15, -121.55, 38.35], data: ["/data/sf-events.json", "/data/bay-events.json"] };
 const STYLE: Record<Theme, string> = {
   light: "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
   dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
@@ -71,7 +74,7 @@ const PALETTE = {
   light: { route: "#1a73e8", casing: "#1557b0", alt: "#aecbfa", altCasing: "#7ba3e8", zoneLo: "#b9bdf7", zoneHi: "#4f46e5", strokeLo: "#6870e8", strokeHi: "#2e2bb8", hex: "#1a56db", sel: "#202124", end: "#ea4335", me: "#1a73e8", bldg: "#d9dce3", label: "#2e2bb8", halo: "#ffffff" },
   dark: { route: "#3d8bff", casing: "#0b3d91", alt: "#4d5b73", altCasing: "#2a3343", zoneLo: "#3b4aa8", zoneHi: "#7c8dff", strokeLo: "#5b6fd6", strokeHi: "#a5b4ff", hex: "#007afc", sel: "#ffffff", end: "#ff5a4e", me: "#3d8bff", bldg: "#2a2f38", label: "#ffffff", halo: "#0e1012" },
 };
-const SOURCES = ["hex", "zones", "routeAlt", "route", "avoid", "havens", "live", "liveLines", "sel", "selLinks", "selPts", "ends", "pin", "me"];
+const SOURCES = ["hex", "zones", "places", "routeAlt", "route", "avoid", "havens", "live", "liveLines", "sel", "selLinks", "selPts", "ends", "pin", "me", "constLines", "constPts", "forecast", "anomaly", "sensors"];
 const OFFSETS = [0, 30, 60, 120, 180];
 const REPORT_CATS = ["incident", "hazard", "blocked", "ramp", "light"] as const;
 const LISTS: { id: ListId; label: string; icon: typeof Heart; color: string }[] = [
@@ -186,6 +189,8 @@ export default function App() {
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
   const [sources, setSources] = useState<Sources | null>(null);
   const [center, setCenter] = useState<[number, number]>(CITY.center);
+  const [sensors, setSensors] = useState<{ phones: number; cells: { cell: string; n: number }[] }>({ phones: 0, cells: [] });
+  const [focusConst, setFocusConst] = useState<number | null>(null);
 
   // ---------- overlays ----------
   const [drawer, setDrawer] = useState(false);
@@ -215,6 +220,9 @@ export default function App() {
   const markers = useRef<{ m: Marker; root: Root }[]>([]);
 
   const addLog = useCallback((text: string, kind?: LogEntry["kind"]) => setLog((l) => [{ t: Date.now(), text, kind }, ...l].slice(0, 120)), []);
+  const placesLoad = useRef<() => void>(() => {});
+  const placeClick = useRef<(p: Place) => void>(() => {});
+  const placesCache = useRef(new Map<string, GeoJSON.Feature>());
 
   // ---------- startup ----------
   useEffect(() => {
@@ -229,13 +237,13 @@ export default function App() {
     } catch {}
     setTheme(savedTheme ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
     const t0 = performance.now();
-    fetch(CITY.data)
-      .then((r) => r.json())
-      .then((j) => {
-        setEvents(j.events);
-        const crashes = j.events.filter((e: Ev) => e.t.startsWith("crash")).length;
-        addLog(`Loaded ${j.events.length.toLocaleString()} events (${j.events.length - crashes} violent dispatch calls, ${crashes.toLocaleString()} injury crashes) in ${Math.round(performance.now() - t0)} ms`, "data");
-      });
+    Promise.allSettled(CITY.data.map((u) => fetch(u).then((r) => (r.ok ? r.json() : Promise.reject(r.status))))).then((res) => {
+      const all: Ev[] = [];
+      for (const r of res) if (r.status === "fulfilled") all.push(...r.value.events);
+      setEvents(all);
+      const crashes = all.filter((e) => e.t.startsWith("crash")).length;
+      addLog(`Loaded ${all.length.toLocaleString()} events from ${res.filter((r) => r.status === "fulfilled").length} data files (${(all.length - crashes).toLocaleString()} violent incidents, ${crashes.toLocaleString()} injury crashes) in ${Math.round(performance.now() - t0)} ms`, "data");
+    });
     if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") navigator.serviceWorker.register("/sw.js").catch(() => {});
     const update = () => setOnline(navigator.onLine);
     update();
@@ -289,6 +297,8 @@ export default function App() {
     set("hex-line", v === "engine");
     set("avoid", v === "engine");
     for (const id of ["zones-halo", "zones", "zones-count"]) set(id, v === "nav" && L.zones);
+    set("places", v === "nav");
+    for (const id of ["forecast", "forecast-line", "sensors", "sensors-fill", "anomaly", "const-glow", "const-lines", "const-pts"]) set(id, v === "engine");
     set("sat", L.satellite);
     set("night", L.night);
     set("bldg-3d", L.buildings);
@@ -303,7 +313,7 @@ export default function App() {
       const firstSymbol = baseLayers.slice(lastShape + 1).find((l) => l.type === "symbol")?.id;
       // Base extras that sit under the labels: satellite, NASA night lights, 3D buildings.
       if (!map.getSource("sat"))
-        map.addSource("sat", { type: "raster", tiles: ["https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"], tileSize: 256, maxzoom: 16, attribution: "Imagery: USGS The National Map" });
+        map.addSource("sat", { type: "raster", tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], tileSize: 256, maxzoom: 19, attribution: "Imagery © Esri, Maxar, Earthstar Geographics" });
       if (!map.getSource("night"))
         map.addSource("night", { type: "raster", tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png"], tileSize: 256, maxzoom: 8, attribution: "Night lights: NASA Black Marble" });
       if (!map.getLayer("sat")) map.addLayer({ id: "sat", type: "raster", source: "sat", layout: { visibility: "none" } }, firstSymbol);
@@ -354,6 +364,37 @@ export default function App() {
         layout: { "text-field": ["to-string", ["get", "n"]], "text-font": FONT, "text-size": 12, "text-allow-overlap": false },
         paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.5 },
       });
+      // Google-style place icons, shown when zoomed in (no search needed).
+      addPoiIcons(map);
+      add({
+        id: "places",
+        type: "symbol",
+        source: "places",
+        minzoom: 14.5,
+        layout: {
+          "icon-image": ["concat", "poi-", ["get", "cat"]],
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 14.5, 0.62, 17, 0.8],
+          "icon-allow-overlap": false,
+          "text-field": ["step", ["zoom"], "", 15.2, ["get", "name"]],
+          "text-font": FONT,
+          "text-size": 11.5,
+          "text-anchor": "left",
+          "text-offset": [1.05, 0],
+          "text-max-width": 9,
+          "text-optional": true,
+          "symbol-sort-key": ["get", "rank"],
+        },
+        paint: { "text-color": ["get", "color"], "text-halo-color": P.halo, "text-halo-width": 1.6 },
+      });
+      // "How it works" intelligence layers.
+      add({ id: "forecast", type: "fill", source: "forecast", paint: { "fill-color": "#f29900", "fill-opacity": ["*", 0.55, ["get", "s"]] } });
+      add({ id: "forecast-line", type: "line", source: "forecast", paint: { "line-color": "#f29900", "line-width": 1.2, "line-opacity": 0.8 } });
+      add({ id: "sensors", type: "line", source: "sensors", paint: { "line-color": "#2fbf71", "line-width": 2, "line-dasharray": [1, 1] } });
+      add({ id: "sensors-fill", type: "fill", source: "sensors", paint: { "fill-color": "#2fbf71", "fill-opacity": 0.12 } });
+      add({ id: "anomaly", type: "circle", source: "anomaly", paint: { "circle-radius": 26, "circle-color": "#d93025", "circle-opacity": 0.15, "circle-stroke-color": "#d93025", "circle-stroke-width": 2.5 } });
+      add({ id: "const-glow", type: "line", source: "constLines", layout: { "line-cap": "round" }, paint: { "line-color": "#ffd27a", "line-width": 7, "line-blur": 5, "line-opacity": ["case", ["get", "on"], 0.7, 0.25] } });
+      add({ id: "const-lines", type: "line", source: "constLines", layout: { "line-cap": "round" }, paint: { "line-color": th === "light" ? "#b06d00" : "#ffd27a", "line-width": ["case", ["get", "on"], 2.4, 1.2], "line-opacity": ["case", ["get", "on"], 1, 0.6] } });
+      add({ id: "const-pts", type: "circle", source: "constPts", paint: { "circle-radius": ["case", ["get", "on"], 5.5, 3.5], "circle-color": th === "light" ? "#b06d00" : "#fff6dc", "circle-stroke-color": th === "light" ? "#fff" : "#ffd27a", "circle-stroke-width": 1.5, "circle-blur": th === "light" ? 0 : 0.15 } });
       add({ id: "avoid", type: "line", source: "avoid", paint: { "line-color": P.sel, "line-width": 1.5, "line-dasharray": [2, 2], "line-opacity": 0.8 } });
       add({ id: "route-alt-casing", type: "line", source: "routeAlt", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": P.altCasing, "line-width": 9 } });
       add({ id: "route-alt", type: "line", source: "routeAlt", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": P.alt, "line-width": 6 } });
@@ -416,8 +457,15 @@ export default function App() {
       map.on("moveend", () => {
         const c = map.getCenter();
         setCenter([c.lng, c.lat]);
+        placesLoad.current();
       });
-      for (const id of ["route-alt", "live", "zones"]) {
+      map.on("click", "places", (e) => {
+        const f = e.features?.[0];
+        if (!f || viewRef.current !== "nav") return;
+        const [lng, lat] = (f.geometry as GeoJSON.Point).coordinates;
+        placeClick.current({ label: String(f.properties.name), lng, lat, cat: String(f.properties.cat), addr: String(f.properties.addr ?? "") });
+      });
+      for (const id of ["route-alt", "live", "zones", "places"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
       }
@@ -582,7 +630,10 @@ export default function App() {
     const tick = async () => {
       try {
         const j = await fetch("/api/live").then((r) => r.json());
-        if (!stop) setZones(j.zones);
+        if (!stop) {
+          setZones(j.zones);
+          if (j.sensors) setSensors(j.sensors);
+        }
       } catch {}
       if (!stop) setTimeout(tick, 1500);
     };
@@ -736,6 +787,49 @@ export default function App() {
       markers.current.push({ m: new ml.Marker({ element: el, anchor: "left", offset: [-13, 0] }).setLngLat([p.lng, p.lat]).addTo(map), root });
     }
   }, [places, poi, view, mapReady]);
+
+  const focusCell = (cell: string) => {
+    setData("sel", fc([hexFeature(cell)]));
+    mapRef.current?.flyTo({ center: cellCenter(cell), zoom: 16, padding: window.innerWidth > 760 ? { left: 480, right: 0, top: 0, bottom: 0 } : { bottom: window.innerHeight * 0.5, top: 0, left: 0, right: 0 } });
+  };
+  const [navWhy, setNavWhy] = useState(false);
+
+  // Base-map places near the map center (restaurants, cafes, hotels, museums...), loaded as you
+  // pan and zoom in, like Google Maps' place icons.
+  const placesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const placesKey = useRef("");
+  placesLoad.current = () => {
+    const map = mapRef.current;
+    if (!map || viewRef.current !== "nav" || map.getZoom() < 14.5) return;
+    if (placesTimer.current) clearTimeout(placesTimer.current);
+    placesTimer.current = setTimeout(async () => {
+      const c = map.getCenter();
+      const key = `${c.lat.toFixed(3)},${c.lng.toFixed(3)}`;
+      if (key === placesKey.current) return;
+      placesKey.current = key;
+      try {
+        const found = await nearbyByTags(Object.values(MAP_POI).flatMap((v) => v.tags), c.lat, c.lng, 50, map.getZoom() >= 16 ? 0.7 : 1.2);
+        for (const p of found) {
+          const cat = POI_OF_TAG[p.tag];
+          if (!cat) continue;
+          placesCache.current.set(`${p.lat.toFixed(5)},${p.lng.toFixed(5)}`, {
+            type: "Feature",
+            properties: { name: p.name, cat, color: MAP_POI[cat].color, addr: p.addr, rank: Math.round(p.dist * 100) },
+            geometry: { type: "Point", coordinates: [p.lng, p.lat] },
+          });
+        }
+        const keys = [...placesCache.current.keys()];
+        for (const k of keys.slice(0, Math.max(0, keys.length - 600))) placesCache.current.delete(k);
+        setData("places", fc([...placesCache.current.values()]));
+      } catch {}
+    }, 350);
+  };
+  placeClick.current = (p: Place) => {
+    setPoi({ ...p, cat: p.cat === "attraction" ? "todo" : p.cat });
+    setPin(null);
+    setZoneCard(null);
+    setReportCard(null);
+  };
 
   const goTo = (p: Place) => {
     setTo(p);
@@ -912,7 +1006,13 @@ export default function App() {
           .sort((p, q) => p.dist - q.dist)
           .slice(0, 4);
 
-        setResult({ safer, fastest: fastScored, avoided, timeline, cams });
+        // Riskiest blocks the chosen route still passes (shown when there is nothing to avoid).
+        const passes: Avoided[] = [...onSafe.keys()]
+          .filter((c) => (cells.get(c)?.score ?? 0) > 0)
+          .map((c) => ({ cell: c, score: cells.get(c)!.score, events: cells.get(c)!.events, live: live.get(c) }))
+          .sort((p, q) => q.score - p.score)
+          .slice(0, 3);
+        setResult({ safer, fastest: fastScored, avoided, passes, timeline, cams });
         setPick("safer");
         // Mid-trip: swap the new route in and keep navigating.
         if (navRef.current && !navRef.current.arrived) {
@@ -1119,8 +1219,9 @@ export default function App() {
       selectCell(latLngToCell(e.lngLat.lat, e.lngLat.lng, 9), map.getZoom() < 14.5);
       return;
     }
-    const hits = map.queryRenderedFeatures(e.point, { layers: ["live", "route-alt", "zones"].filter((l) => map.getLayer(l)) });
+    const hits = map.queryRenderedFeatures(e.point, { layers: ["places", "live", "route-alt", "zones"].filter((l) => map.getLayer(l)) });
     const hit = hits.find((h) => h.layer.id !== "zones") ?? hits[0];
+    if (hit?.layer.id === "places") return; // handled by the place-icon click
     if (hit?.layer.id === "route-alt") return setPick(hit.properties.alt);
     if (hit?.layer.id === "live" && hit.properties.kind === "report") return setReportCard({ ids: String(hit.properties.ids).split(","), category: hit.properties.category, count: hit.properties.count });
     setReportCard(null);
@@ -1176,11 +1277,65 @@ export default function App() {
       ?.request("screen")
       .then((l) => (lock = l))
       .catch(() => {});
+    // Join the acoustic sensor grid: check in every 20 s (the server only keeps area counts).
+    const beat = (off = false) => {
+      const [lng, lat] = here();
+      fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "listen", lat, lng, device: device.current, off }) }).catch(() => {});
+    };
+    beat();
+    const iv = setInterval(beat, 20_000);
     return () => {
       w.stop();
       lock?.release();
+      clearInterval(iv);
+      beat(true);
     };
-  }, [listenOn, onDetect]);
+  }, [listenOn, onDetect, here]);
+
+  // ---------- situational awareness (events and places only, never people) ----------
+  const calls24: Call[] = useMemo(() => sources?.calls24 ?? [], [sources]);
+  const constellations = useMemo(() => findConstellations(events), [events]);
+  const forecast = useMemo(() => forecastNextHour(events, mode), [events, mode]);
+  const anomalies = useMemo(() => detectAnomalies(calls24, events), [calls24, events]);
+  const corroborated = useMemo(() => corroborate(zones, calls24), [zones, calls24]);
+  const intelSeen = useRef(new Set<string>());
+  useEffect(() => {
+    for (const a of anomalies) {
+      const k = `a:${a.cell}:${a.n}`;
+      if (intelSeen.current.has(k)) continue;
+      intelSeen.current.add(k);
+      addLog(`ANOMALY · ${a.n} violent calls in 3 h near ${a.calls[0].where.toLowerCase()} (normal ≈ ${a.expected.toFixed(1)})`, "live");
+    }
+    for (const [id, c] of corroborated) {
+      const k = `c:${id}`;
+      if (intelSeen.current.has(k)) continue;
+      intelSeen.current.add(k);
+      addLog(`CORROBORATED · phone alert matches SFPD "${c.type.toLowerCase()}" call at ${c.where.toLowerCase()}`, "live");
+    }
+  }, [anomalies, corroborated, addLog]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const lines: unknown[] = [];
+    const pts: unknown[] = [];
+    for (const c of constellations) {
+      const on = c.id === focusConst;
+      for (const [a, b] of c.links) lines.push(line([[a.lng, a.lat], [b.lng, b.lat]], { on, id: c.id }));
+      for (const e of c.events) pts.push(pt([e.lng, e.lat], { on, id: c.id }));
+    }
+    setData("constLines", fc(lines));
+    setData("constPts", fc(pts));
+    const maxRise = Math.max(1, ...forecast.rising.map((x) => x.next - x.now));
+    setData("forecast", fc(forecast.rising.slice(0, 25).map((x) => hexFeature(x.cell, { s: Math.max(0.2, (x.next - x.now) / maxRise) }))));
+    setData("anomaly", fc(anomalies.map((a) => pt([a.lng, a.lat], { n: a.n }))));
+    setData("sensors", fc(sensors.cells.map((s) => hexFeature(s.cell, { n: s.n }))));
+  }, [constellations, focusConst, forecast, anomalies, sensors, mapReady, setData]);
+
+  const focusConstellation = (id: number | null) => {
+    setFocusConst(id);
+    const c = constellations.find((x) => x.id === id);
+    if (c) fit(c.events.map((e) => [e.lng, e.lat] as [number, number]), 16.5);
+  };
 
   const answer = async (ans: "safe" | "danger") => {
     if (!alert) return;
@@ -1358,7 +1513,7 @@ export default function App() {
                 {!query && (
                   <>
                     <div className="sg-chips">
-                      {CAT_UI.slice(0, 6).map((c) => (
+                      {CHIP_ORDER.slice(0, 8).map((id) => CAT[id]).filter(Boolean).map((c) => (
                         <button key={c.id} className="sg-chip" onMouseDown={() => openCategory(c.id)}>
                           <c.icon size={15} style={{ color: c.color }} /> {c.label}
                         </button>
@@ -1408,7 +1563,7 @@ export default function App() {
         )}
         {view === "nav" && !showDir && (
           <div className="chips" role="toolbar" aria-label="Nearby">
-            {CAT_UI.slice(0, 8).map((c) => (
+            {CHIP_ORDER.map((id) => CAT[id]).filter(Boolean).map((c) => (
               <button key={c.id} className={`chip ${category === c.id && panel === "results" ? "on" : ""}`} onClick={() => openCategory(c.id)}>
                 <c.icon size={16} style={{ color: category === c.id && panel === "results" ? undefined : c.color }} /> {c.label}
               </button>
@@ -1434,6 +1589,15 @@ export default function App() {
               <Cpu size={15} /> <span>{t("howItWorks")}</span>
             </button>
           </div>
+          <button
+            className={`icon-btn card round ${layers.satellite ? "pressed" : ""}`}
+            onClick={() => setLayers((l) => ({ ...l, satellite: !l.satellite }))}
+            aria-pressed={layers.satellite}
+            aria-label="Satellite view"
+            title={layers.satellite ? "Map view" : "Satellite view"}
+          >
+            <Satellite size={18} />
+          </button>
           <button className="icon-btn card round" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label={theme === "dark" ? t("light") : t("dark")} title={theme === "dark" ? t("light") : t("dark")}>
             {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
@@ -1675,37 +1839,7 @@ export default function App() {
                   </span>
                 </div>
 
-                {r.avoided.length > 0 && (
-                  <section className="block why">
-                    <div className="why-head">
-                      <span className="why-badge">
-                        <ShieldCheck size={18} />
-                      </span>
-                      <div>
-                        <h3>{t("why")}</h3>
-                        <p>
-                          Avoids {r.avoided.length} higher-risk {r.avoided.length === 1 ? "spot" : "spots"} on the fastest route
-                          {pctLess > 0 ? ` · ${pctLess}% less risk` : ""}
-                        </p>
-                      </div>
-                    </div>
-                    <ul className="why-list">
-                      {r.avoided.map((a) => (
-                        <li key={a.cell}>
-                          <button
-                            onClick={() => {
-                              setData("sel", fc([hexFeature(a.cell)]));
-                              mapRef.current?.flyTo({ center: cellCenter(a.cell), zoom: 16, padding: window.innerWidth > 760 ? { left: 480, right: 0, top: 0, bottom: 0 } : { bottom: window.innerHeight * 0.5, top: 0, left: 0, right: 0 } });
-                            }}
-                          >
-                            <WhyItem a={a} lang={lang} t={t} />
-                            <ChevronRight size={16} className="chev" />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
+                <WhySection r={r} pctLess={pctLess} lang={lang} t={t} onFocus={focusCell} />
 
                 <section className="block">
                   <h3>{t("bestTime")}</h3>
@@ -1781,6 +1915,13 @@ export default function App() {
           sources={sources}
           center={center}
           theme={theme ?? "light"}
+          constellations={constellations}
+          focusConst={focusConst}
+          onFocusConst={focusConstellation}
+          forecast={forecast}
+          anomalies={anomalies}
+          sensors={sensors}
+          corroborated={corroborated}
         />
       )}
 
@@ -1840,7 +1981,7 @@ export default function App() {
                 Risk zones
               </button>
             </div>
-            <p className="fine">Satellite: USGS · Night lights: NASA</p>
+            <p className="fine">Satellite: Esri · Night lights: NASA</p>
           </div>
         )}
       </div>
@@ -2090,6 +2231,11 @@ export default function App() {
               <span>{navInfo.next}</span>
             </div>
           </div>
+          {navWhy && result && (
+            <div className="nav-why card">
+              <WhySection r={result} pctLess={pctLess} lang={lang} t={t} onFocus={() => {}} compact />
+            </div>
+          )}
           <div className="nav-sheet card">
             <div className="ns-main">
               <span className="ns-min">{Math.max(1, Math.round(navInfo.mins))} min</span>
@@ -2101,9 +2247,16 @@ export default function App() {
               </span>
               {nav.sim && <span className="ns-demo">Demo trip · {SIM_SPEEDUP}× speed</span>}
             </div>
-            <button className="btn" onClick={simulate} title="Demo: a gunshot is detected on the road ahead">
-              <Siren size={16} /> Simulate alert
-            </button>
+            <div className="ns-actions">
+              {result && (
+                <button className={`btn ${navWhy ? "on" : ""}`} onClick={() => setNavWhy((w) => !w)} aria-expanded={navWhy}>
+                  <ShieldCheck size={16} /> {t("why")}
+                </button>
+              )}
+              <button className="btn" onClick={simulate} title="Demo: a gunshot is detected on the road ahead">
+                <Siren size={16} /> Simulate alert
+              </button>
+            </div>
             <button className="btn danger-btn" onClick={exitNav}>
               <X size={16} /> Exit
             </button>
@@ -2222,7 +2375,7 @@ function RouteOption(p: { on: boolean; onClick: () => void; minutes: number; mi:
 
 // One avoided spot: a satellite snapshot with each incident circled, what happened there,
 // and when. Crashes are amber, violence is red.
-function WhyItem({ a, lang, t }: { a: Avoided; lang: Lang; t: (k: Key) => string }) {
+function WhyItem({ a, lang, t, tag }: { a: Avoided; lang: Lang; t: (k: Key) => string; tag?: string }) {
   const [lng, lat] = cellCenter(a.cell);
   const sat = satellite(lng, lat, 0.0026, 132, 99);
   const hex = cellToBoundary(a.cell, true)
@@ -2272,6 +2425,7 @@ function WhyItem({ a, lang, t }: { a: Avoided; lang: Lang; t: (k: Key) => string
         <span className="ws-count">{a.events.length}</span>
       </span>
       <span className="why-text">
+        {tag && <span className={`why-tag ${tag === "Avoided" ? "avoided" : "onroute"}`}>{tag}</span>}
         <strong>{place ? `Near ${place}` : "Higher-risk block"}</strong>
         <span className="why-types">
           {ranked.slice(0, 3).map(([type, n]) => (
@@ -2288,5 +2442,43 @@ function WhyItem({ a, lang, t }: { a: Avoided; lang: Lang; t: (k: Key) => string
         )}
       </span>
     </span>
+  );
+}
+
+// "Why this route": always shown. Avoided spots when the safer route detours; otherwise the
+// riskiest blocks the route still passes, so people always see what the route weighed.
+function WhySection({ r, pctLess, lang, t, onFocus, compact }: { r: Result; pctLess: number; lang: Lang; t: (k: Key) => string; onFocus: (cell: string) => void; compact?: boolean }) {
+  const avoided = r.avoided.length > 0;
+  const list = avoided ? r.avoided : r.passes;
+  return (
+    <section className={`block why ${compact ? "compact" : ""}`} aria-label={t("why")}>
+      <div className="why-head">
+        <span className={`why-badge ${avoided ? "" : "calm"}`}>
+          <ShieldCheck size={18} />
+        </span>
+        <div>
+          <h3>{t("why")}</h3>
+          <p>
+            {avoided
+              ? `Avoids ${r.avoided.length} higher-risk ${r.avoided.length === 1 ? "spot" : "spots"} on the fastest route${pctLess > 0 ? ` · ${pctLess}% less risk` : ""}`
+              : list.length
+                ? "Nothing riskier to avoid: this is already the lowest-risk way. Heads-up on the busiest spots along it:"
+                : "No recorded incidents along this route for this travel mode."}
+          </p>
+        </div>
+      </div>
+      {list.length > 0 && (
+        <ul className="why-list">
+          {list.map((a) => (
+            <li key={a.cell}>
+              <button onClick={() => onFocus(a.cell)}>
+                <WhyItem a={a} lang={lang} t={t} tag={avoided ? "Avoided" : "On route"} />
+                <ChevronRight size={16} className="chev" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

@@ -54,6 +54,19 @@ To clear live alerts between runs: `curl -X POST localhost:3002/api/live -H 'Con
 | Roads | `app/api/roads/route.ts` | Caltrans cameras + lane closures (car and moped only) |
 | Offline | `public/sw.js` | Caches the app, risk data and map tiles you've seen (production build only) |
 
+## Advanced features (How it works tab)
+
+- **Incident constellations:** violent incidents within 500 ft and 12 h of each other are linked into chains (gold lines). Click one to fly to it.
+- **Next-hour forecast:** the same risk model run one hour ahead; orange hexagons are blocks getting riskier.
+- **Live anomaly watch:** violent dispatch calls in the last 3 h per area vs that area's normal rate; 3x normal is flagged.
+- **Acoustic sensor grid:** phones with "Listen for gunshots" on check in every 20 s; only area-level counts are kept.
+- **Alert corroboration:** a phone-detected bang is matched against SFPD "shots fired" calls within 0.4 mi and 20 min, and the nearest public road camera is shown.
+- All of this works on events and places, never on people (no faces, plates, identities or individual tracks).
+
+## Live traffic (optional)
+
+Car and moped ETAs use a typical SF traffic model by hour. For real-time traffic, create a free key at developer.tomtom.com, copy `.env.local.example` to `.env.local`, paste the key after `TOMTOM_API_KEY=`, and restart the server.
+
 ## Honest notes for judges
 
 - Data is **recent, not live**: SF's public feed has ~300 dispatch calls a month with locations,

@@ -17,6 +17,15 @@ import {
   TrainFront,
   Utensils,
   Wine,
+  Ticket,
+  Landmark,
+  Trees,
+  ShoppingBag,
+  Dumbbell,
+  BookOpen,
+  PlugZap,
+  Toilet,
+  Bike as BikeIcon,
   type LucideIcon,
 } from "lucide-react";
 import type { Mode } from "@/lib/scoring";
@@ -44,5 +53,17 @@ export const CAT_UI: { id: string; label: string; icon: LucideIcon; color: strin
   { id: "gas", label: "Gas", icon: Fuel, color: "#1a73e8" },
   { id: "parking", label: "Parking", icon: SquareParking, color: "#1a73e8" },
   { id: "police", label: "Police", icon: Shield, color: "#5f6368" },
+  { id: "todo", label: "Things to do", icon: Ticket, color: "#9334e6" },
+  { id: "museum", label: "Museums", icon: Landmark, color: "#9334e6" },
+  { id: "park", label: "Parks", icon: Trees, color: "#188038" },
+  { id: "shopping", label: "Shopping", icon: ShoppingBag, color: "#1a73e8" },
+  { id: "gym", label: "Gyms", icon: Dumbbell, color: "#5f6368" },
+  { id: "library", label: "Libraries", icon: BookOpen, color: "#5f6368" },
+  { id: "ev", label: "EV charging", icon: PlugZap, color: "#188038" },
+  { id: "restroom", label: "Restrooms", icon: Toilet, color: "#5f6368" },
+  { id: "bikeshare", label: "Bike share", icon: BikeIcon, color: "#188038" },
 ];
 export const CAT = Object.fromEntries(CAT_UI.map((c) => [c.id, c]));
+
+// Order of the tab bar next to the search box (like Google Maps).
+export const CHIP_ORDER = ["restaurant", "cafe", "todo", "hotel", "museum", "transit", "pharmacy", "atm", "grocery", "park", "shopping", "hospital", "bar", "gas", "parking", "ev", "restroom", "bikeshare", "gym", "library", "police"];
