@@ -1,5 +1,3 @@
-// Situational-awareness analytics. Everything here works on events and places,
-// never on people: no identities, faces, plates or individual tracks.
 import { cellToParent, gridDisk, latLngToCell } from "h3-js";
 import { scoreCells, type Ev, type LiveZone, type Mode } from "./scoring";
 import { placeOf } from "./format";
@@ -7,13 +5,9 @@ import { placeOf } from "./format";
 const kmBetween = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => Math.hypot((a.lng - b.lng) * 88, (a.lat - b.lat) * 111);
 const timeOf = (e: Ev) => Date.parse(e.d) + e.h * 3600e3;
 
-// ---------- incident constellations ----------
-// Violent incidents within 500 ft and 12 h of each other are linked; linked groups of 3+
-// are "constellations" (e.g. a run of fights moving down one street over a weekend).
 export type Constellation = { id: number; events: Ev[]; links: [Ev, Ev][]; from: number; to: number; place: string; top: string; spanKm: number };
 
 export function findConstellations(events: Ev[], maxKm = 0.15, maxHours = 12, minSize = 3): Constellation[] {
-  // Violence only: break-ins and threats are too common to say anything about a chain.
   const crime = events.filter((e) => ["shooting", "carjacking", "robbery", "agg_assault", "assault"].includes(e.t));
   const byCell = new Map<string, number[]>();
   crime.forEach((e, i) => {
@@ -42,8 +36,6 @@ export function findConstellations(events: Ev[], maxKm = 0.15, maxHours = 12, mi
   for (const idx of groups.values()) {
     if (idx.length < minSize) continue;
     const evs = idx.map((i) => crime[i]).sort((a, b) => timeOf(a) - timeOf(b));
-    // Minimum spanning tree: the "constellation lines" between incidents (big chains are
-    // drawn in time order instead, to keep this fast).
     const inTree = new Set([0]);
     const links: [Ev, Ev][] = [];
     if (evs.length > 60) for (let k = 1; k < evs.length; k++) links.push([evs[k - 1], evs[k]]);
@@ -81,8 +73,6 @@ export function findConstellations(events: Ev[], maxKm = 0.15, maxHours = 12, mi
     .map((c, i) => ({ ...c, id: i + 1 }));
 }
 
-// ---------- next-hour forecast ----------
-// Same model as routing, evaluated one hour ahead: which blocks get riskier, and by how much.
 export type Forecast = { now: number; next: number; rising: { cell: string; now: number; next: number }[] };
 
 export function forecastNextHour(events: Ev[], mode: Mode, at = new Date()): Forecast {
@@ -99,9 +89,6 @@ export function forecastNextHour(events: Ev[], mode: Mode, at = new Date()): For
   return { now, next, rising };
 }
 
-// ---------- live anomaly watch ----------
-// Violent dispatch calls in the last 3 hours per area (~0.3 sq mi) versus that area's normal
-// rate from the historical data. 2+ calls at 3x normal or more is flagged.
 export type Call = { ts: number; type: string; where: string; lat: number; lng: number };
 export type Anomaly = { cell: string; n: number; expected: number; calls: Call[]; lat: number; lng: number };
 
@@ -132,9 +119,6 @@ export function detectAnomalies(calls: Call[], events: Ev[], now = Date.now()): 
   return out.sort((a, b) => b.n / Math.max(b.expected, 0.15) - a.n / Math.max(a.expected, 0.15));
 }
 
-// ---------- alert corroboration ----------
-// A phone-detected bang is backed up when SFPD dispatch logs a gun-related call within
-// 0.4 mi and 20 minutes of it.
 export function corroborate(zones: LiveZone[], calls: Call[]): Map<string, Call> {
   const out = new Map<string, Call>();
   for (const z of zones) {

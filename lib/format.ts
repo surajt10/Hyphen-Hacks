@@ -1,4 +1,3 @@
-// US units and formats everywhere: miles / feet, "Oct 10", "9 PM".
 export const fmtDist = (mi: number) => (mi < 0.1 ? `${Math.max(10, Math.round((mi * 5280) / 10) * 10)} ft` : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`);
 
 export const fmtDate = (ymd: string) => {
@@ -16,8 +15,6 @@ export const fmtAgo = (t: number) => {
   return `${Math.floor(s / 86400)} d ago`;
 };
 
-// "Fight No Weapon call, 16th St & Hoff St" -> "16th St & Hoff St"
-// "Robbery, 300 block Oak St, Oakland" -> "300 Block Oak St" (Bay Area data ends with the city)
 export const placeOf = (desc: string) => {
   const parts = desc.split(", ");
   const s = parts.length >= 3 ? parts[parts.length - 2] : parts[parts.length - 1];
@@ -29,7 +26,6 @@ export const placeOf = (desc: string) => {
     .trim();
 };
 
-// Busiest 3-hour window, e.g. "9 PM–12 AM".
 export const peakWindow = (hours: number[]) => {
   if (!hours.length) return "";
   const n = new Array(24).fill(0);

@@ -22,7 +22,6 @@ export const viewport: Viewport = {
   ],
 };
 
-// Apply the saved theme before first paint so the page never flashes the wrong colours.
 const themeScript = `try{var t=(localStorage.getItem("ns-theme")||"").replace(/[^a-z]/g,"");if(t!=="light"&&t!=="dark")t=(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t}catch(e){}`;
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

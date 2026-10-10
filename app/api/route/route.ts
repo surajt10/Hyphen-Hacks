@@ -1,5 +1,3 @@
-// Proxies routing to the public Valhalla server (OpenStreetMap data, no key needed).
-// Each travel mode maps to a Valhalla costing model; avoid zones go in as exclude_polygons.
 import type { Mode } from "@/lib/scoring";
 
 const VALHALLA = process.env.VALHALLA_URL ?? "https://valhalla1.openstreetmap.de";
@@ -11,11 +9,9 @@ type Body = {
   exclude?: [number, number][][];
   night?: boolean;
   alternates?: number;
-  depart?: string; // ISO time the trip starts
+  depart?: string;
 };
 
-// The public router has free-flow speeds only. For cars and mopeds we apply typical
-// San Francisco congestion by time of day so ETAs match real-world trips more closely.
 function trafficFactor(mode: Mode, d: Date) {
   if (mode !== "car" && mode !== "moped") return 1;
   const h = d.getHours(), weekday = d.getDay() >= 1 && d.getDay() <= 5;
@@ -33,7 +29,6 @@ function costing(mode: Mode, night: boolean) {
     case "bike":
       return { costing: "bicycle", options: { bicycle: { bicycle_type: "Hybrid", cycling_speed: 16, use_roads: 0.3, use_hills: 0.3, use_lit: lit } } };
     case "scooter":
-      // Kick e-scooters: no sidewalks, prefer bike lanes and quiet streets, avoid rough surfaces.
       return { costing: "bicycle", options: { bicycle: { bicycle_type: "City", cycling_speed: 18, use_roads: 0.1, use_hills: 0.5, avoid_bad_surfaces: 0.8, use_lit: lit } } };
     case "moped":
       return { costing: "motor_scooter", options: { motor_scooter: { top_speed: 45, use_primary: 0.3, use_hills: 0.3 } } };
@@ -43,7 +38,6 @@ function costing(mode: Mode, night: boolean) {
   }
 }
 
-// Valhalla encodes shapes as polyline with 6-digit precision.
 function decode(str: string): [number, number][] {
   const coords: [number, number][] = [];
   let index = 0, lat = 0, lng = 0;
@@ -69,7 +63,6 @@ type Trip = {
   legs: { shape: string; maneuvers: { instruction: string; length: number; begin_shape_index: number }[] }[];
 };
 
-// Each step keeps "at": the index into coords where the maneuver begins (for turn-by-turn).
 const toRoute = (trip: Trip) => {
   const coords: [number, number][] = [];
   const steps: { text: string; mi: number; at: number }[] = [];
@@ -81,8 +74,6 @@ const toRoute = (trip: Trip) => {
   return { coords, minutes: trip.summary.time / 60, mi: trip.summary.length, steps };
 };
 
-// Live traffic (optional): with TOMTOM_API_KEY set, car and moped times are scaled by TomTom's
-// real-time travel time for the same trip. Without a key we use the time-of-day model above.
 const liveCache = ((globalThis as unknown as { __ns_tt?: Map<string, { at: number; minutes: number }> }).__ns_tt ??= new Map());
 async function trafficFor(body: Body, freeFlowMinutes: number): Promise<{ f: number; source: "live" | "model" | "none" }> {
   if (body.mode !== "car" && body.mode !== "moped") return { f: 1, source: "none" };
@@ -139,7 +130,6 @@ export async function POST(request: Request) {
   try {
     return Response.json({ routes: await valhalla(body, body.exclude), excluded: !!body.exclude?.length });
   } catch (err) {
-    // Avoid zones can cut off the start or end; fall back to an unrestricted route.
     if (body.exclude?.length) {
       try {
         return Response.json({ routes: await valhalla(body), excluded: false, note: String(err) });

@@ -1,7 +1,5 @@
 "use client";
 
-// Animated starfield (adapted from React Bits "Galaxy", MIT). Used for the splash screen,
-// the "How it works" header and the arrival screen.
 import { Renderer, Program, Mesh, Color, Triangle } from "ogl";
 import { useEffect, useRef } from "react";
 
@@ -178,7 +176,6 @@ export default function Galaxy({
   useEffect(() => {
     const ctn = ctnDom.current;
     if (!ctn) return;
-    // Respect people who ask for less motion.
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const renderer = new Renderer({ alpha: transparent, premultipliedAlpha: false, dpr: Math.min(window.devicePixelRatio, 1.5) });
     const gl = renderer.gl;

@@ -1,6 +1,3 @@
-// Downloads San Francisco violent dispatch calls + injury-crash data from DataSF and writes
-// public/data/sf-events.json: one compact record per event, tagged with its H3 cell.
-// Run: node scripts/build-data.mjs
 import { latLngToCell } from "h3-js";
 import { writeFileSync, mkdirSync } from "node:fs";
 
@@ -18,7 +15,6 @@ async function soql(dataset, params) {
 
 const titleCase = (s) => s.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).replace(/\s+/g, " ").trim();
 
-// Event types. Weights and per-mode multipliers live in lib/scoring.ts.
 function classifyCall(desc) {
   const d = desc.toUpperCase();
   if (/ DV\b|DOMESTIC|HOMELESS|SIT\/LIE/.test(d)) return null;
@@ -44,9 +40,6 @@ function classifyCrash(r) {
 
 const events = [];
 
-// SF's incident-report feed no longer publishes locations, so violence comes from
-// police dispatch calls (near real time, mapped to intersections). Domestic and
-// "sensitive" calls carry no location; homeless / sit-lie calls are never used.
 const incidents = await soql("gnap-fj3t", {
   $select: "received_datetime,call_type_final_desc,intersection_name,intersection_point",
   $where: `intersection_point IS NOT NULL AND received_datetime > '${daysAgo(365)}'`,

@@ -1,9 +1,6 @@
-// Minimal QR code encoder (byte mode, error correction level M, versions 1–10), enough for
-// a "scan to join the sensor grid" link. Follows the QR Code spec (ISO/IEC 18004); the
-// structure mirrors Project Nayuki's reference implementation.
 const ECC_PER_BLOCK = [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26];
 const NUM_BLOCKS = [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5];
-const FORMAT_M = 0; // error correction level M in the format bits
+const FORMAT_M = 0;
 
 function rawDataModules(ver: number) {
   let r = (16 * ver + 128) * ver + 64;
@@ -48,14 +45,12 @@ function rsRemainder(data: number[], divisor: number[]) {
 }
 const bit = (x: number, i: number) => ((x >>> i) & 1) !== 0;
 
-/** Returns the QR matrix for `text` as rows of booleans (true = dark), or null if too long. */
 export function qrMatrix(text: string): boolean[][] | null {
   const bytes = [...new TextEncoder().encode(text)];
   let ver = 1;
   while (ver <= 10 && 4 + (ver < 10 ? 8 : 16) + 8 * bytes.length > dataCodewords(ver) * 8) ver++;
   if (ver > 10) return null;
 
-  // Data bits: byte mode, length, bytes, terminator, padding.
   const bits: number[] = [];
   const push = (val: number, len: number) => {
     for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1);
@@ -70,7 +65,6 @@ export function qrMatrix(text: string): boolean[][] | null {
   const data: number[] = [];
   for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(""), 2));
 
-  // Error correction: split into blocks, add Reed–Solomon codewords, interleave.
   const numBlocks = NUM_BLOCKS[ver], eccLen = ECC_PER_BLOCK[ver];
   const raw = Math.floor(rawDataModules(ver) / 8);
   const numShort = numBlocks - (raw % numBlocks);
@@ -90,7 +84,6 @@ export function qrMatrix(text: string): boolean[][] | null {
       if (i !== shortLen - eccLen || j >= numShort) codewords.push(b[i]);
     });
 
-  // Function patterns.
   const size = ver * 4 + 17;
   const mod = Array.from({ length: size }, () => new Array<boolean>(size).fill(false));
   const fn = Array.from({ length: size }, () => new Array<boolean>(size).fill(false));
@@ -138,7 +131,7 @@ export function qrMatrix(text: string): boolean[][] | null {
     for (let i = 8; i < 15; i++) set(8, size - 15 + i, bit(b, i));
     set(8, size - 8, true);
   };
-  formatBits(0); // reserve the format areas; real bits are drawn after choosing the mask
+  formatBits(0);
   if (ver >= 7) {
     let rem = ver;
     for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1f25);
@@ -150,7 +143,6 @@ export function qrMatrix(text: string): boolean[][] | null {
     }
   }
 
-  // Data modules in the zigzag order.
   let i = 0;
   for (let right = size - 1; right >= 1; right -= 2) {
     if (right === 6) right = 5;
@@ -165,7 +157,6 @@ export function qrMatrix(text: string): boolean[][] | null {
       }
   }
 
-  // Try all 8 masks and keep the one with the lowest penalty score.
   const maskFn = [
     (x: number, y: number) => (x + y) % 2 === 0,
     (_: number, y: number) => y % 2 === 0,
@@ -215,14 +206,13 @@ export function qrMatrix(text: string): boolean[][] | null {
       bestScore = sc;
       best = m;
     }
-    applyMask(m); // undo
+    applyMask(m);
   }
   applyMask(best);
   formatBits(best);
   return mod;
 }
 
-/** SVG path data for the dark modules, offset by a quiet zone of `margin` modules. */
 export function qrPath(m: boolean[][], margin = 4) {
   let d = "";
   m.forEach((row, y) => row.forEach((dark, x) => dark && (d += `M${x + margin},${y + margin}h1v1h-1z`)));

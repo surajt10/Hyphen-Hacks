@@ -39,7 +39,6 @@ export const MODE_ICON: Record<Mode, LucideIcon> = {
   car: Car,
 };
 
-// Place categories, in the order of the tab bar next to the search box.
 export const CAT_UI: { id: string; label: string; icon: LucideIcon; color: string }[] = [
   { id: "restaurant", label: "Restaurants", icon: Utensils, color: "#e8710a" },
   { id: "cafe", label: "Cafes", icon: Coffee, color: "#e8710a" },
@@ -65,5 +64,4 @@ export const CAT_UI: { id: string; label: string; icon: LucideIcon; color: strin
 ];
 export const CAT = Object.fromEntries(CAT_UI.map((c) => [c.id, c]));
 
-// Order of the tab bar next to the search box (like Google Maps).
 export const CHIP_ORDER = ["restaurant", "cafe", "todo", "hotel", "museum", "transit", "pharmacy", "atm", "grocery", "park", "shopping", "hospital", "bar", "gas", "parking", "ev", "restroom", "bikeshare", "gym", "library", "police"];

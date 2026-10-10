@@ -1,5 +1,3 @@
-// Google-style place icons for the map: a coloured circle with a white lucide glyph,
-// rendered to images the map can use as symbols.
 import type { Map as MLMap } from "maplibre-gl";
 import { __iconData as utensils } from "lucide-react/dist/esm/icons/utensils.mjs";
 import { __iconData as coffee } from "lucide-react/dist/esm/icons/coffee.mjs";
@@ -22,7 +20,6 @@ import { __iconData as bulbOff } from "lucide-react/dist/esm/icons/lightbulb-off
 
 type Node = [string, Record<string, string | number>][];
 
-// Base-map places: OpenStreetMap tags fetched near the map center, and how each one looks.
 export const MAP_POI: Record<string, { tags: string[]; color: string; node: Node; label: string }> = {
   restaurant: { tags: ["amenity:restaurant", "amenity:fast_food"], color: "#e8710a", node: utensils.node, label: "Restaurant" },
   cafe: { tags: ["amenity:cafe"], color: "#e8710a", node: coffee.node, label: "Cafe" },
@@ -38,7 +35,6 @@ export const MAP_POI: Record<string, { tags: string[]; color: string; node: Node
   park: { tags: ["leisure:park"], color: "#188038", node: trees.node, label: "Park" },
 };
 
-// Live alerts drawn on the map: traffic incidents (TomTom) and streetlights out (SF 311).
 const ALERT_ICONS: Record<string, { color: string; node: Node; glyph?: string }> = {
   "ti-accident": { color: "#d93025", node: carFront.node },
   "ti-closure": { color: "#b3261e", node: ban.node },
@@ -58,7 +54,6 @@ function svgFor(node: Node, color: string, glyph = "#ffffff") {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="27" fill="${color}" stroke="#ffffff" stroke-width="4"/><g transform="translate(18 18) scale(1.1667)" fill="none" stroke="${glyph}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">${inner}</g></svg>`;
 }
 
-// Register every icon on the map (again after a style change). Images load async.
 export async function addPoiIcons(map: MLMap) {
   const all: [string, { color: string; node: Node; glyph?: string }][] = [...Object.entries(MAP_POI).map(([cat, v]) => [`poi-${cat}`, v] as [string, typeof v]), ...Object.entries(ALERT_ICONS)];
   await Promise.all(

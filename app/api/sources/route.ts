@@ -1,5 +1,3 @@
-// Live status of every data source NorthStar uses, for the "How it works" panel.
-// Each feed is fetched server-side, timed, and cached for a minute.
 import { trafficIncidents } from "@/lib/traffic";
 type Feed = { id: string; name: string; provider: string; ok: boolean; ms: number; detail: string; updated?: string; value?: string };
 
@@ -51,9 +49,7 @@ export async function GET() {
       const r = await fetch("https://valhalla1.openstreetmap.de/status", { cache: "no-store" });
       return r.json();
     }),
-    // Every located violent call in the last 24 h: feeds anomaly detection and alert corroboration.
     timed(() => json(`https://data.sf.gov/resource/gnap-fj3t.json?$select=received_datetime,call_type_final_desc,intersection_name,intersection_point&$where=${encodeURIComponent(`intersection_point IS NOT NULL AND received_datetime > '${since}' AND ${VIOLENT}`)}&$order=received_datetime DESC&$limit=400`)),
-    // Open 311 streetlight outages (burnt out, flickering, dim, knocked down) from the last 6 months.
     timed(() => json(`https://data.sf.gov/resource/vw6y-z8j6.json?$select=service_request_id,requested_datetime,service_subtype,address,lat,long&$where=${encodeURIComponent(`${LIGHT_OUT} AND requested_datetime > '${since180}'`)}&$order=requested_datetime DESC&$limit=500`)),
     timed(async () => {
       const r = await trafficIncidents();
@@ -170,7 +166,6 @@ export async function GET() {
     },
   ];
 
-  // Drop cameras showing Caltrans's "Temporarily Unavailable" placeholder (~13.4 KB image).
   const checked = await Promise.all(
     camList.slice(0, 14).map(async (c) => {
       try {

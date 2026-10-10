@@ -1,5 +1,3 @@
-// Live layer shared by every phone: sound detections and community reports.
-// Kept in server memory (fine for a single demo server). Phones poll GET every ~1.5 s.
 import type { LiveZone } from "@/lib/scoring";
 import { cellToLatLng, latLngToCell } from "h3-js";
 
@@ -12,7 +10,7 @@ type Raw = {
   ts: number;
   device: string;
   confidence?: number;
-  at?: number; // sound onset on the server's clock (ms), from the phone's synced clock
+  at?: number;
   demo?: boolean;
   answer?: "danger" | "safe";
   votes: { device: string; vote: "confirm" | "gone" }[];
@@ -20,8 +18,6 @@ type Raw = {
 
 const store = ((globalThis as unknown as { __ns_live?: Raw[] }).__ns_live ??= []);
 
-// Phones with "listen for gunshots" on check in every ~20 s. Only area-level counts are ever
-// returned (H3 cells about 0.3 sq mi), never a device's position.
 const listeners = ((globalThis as unknown as { __ns_listen?: Map<string, { lat: number; lng: number; ts: number }> }).__ns_listen ??= new Map());
 function sensors(now: number) {
   const cells = new Map<string, number>();
@@ -43,7 +39,7 @@ const TTL = {
   reportIncident: 6 * 60 * MIN,
   reportHazard: 7 * 24 * 60 * MIN,
 };
-const SOUND_RADIUS_M = 800; // a gunshot carries 1+ mi; phones this close hear the same one
+const SOUND_RADIUS_M = 800;
 const SOUND_WINDOW_MS = 3000;
 const REPORT_RADIUS_M = 150;
 
@@ -54,19 +50,11 @@ function meters(a: { lat: number; lng: number }, b: { lat: number; lng: number }
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-// Phone positions are never returned exactly: snapped to the center of a ~0.01 sq mi cell.
 const snap = (p: { lat: number; lng: number }): [number, number] => {
   const [lat, lng] = cellToLatLng(latLngToCell(p.lat, p.lng, 10));
   return [lng, lat];
 };
 
-// ---------- acoustic triangulation ----------
-// Sound travels 343 m/s, so phones that heard the same bang at slightly different times
-// (on synced clocks) pin down where it came from. Grid search over (x, y): for each point the
-// best emission time is the mean of (arrival - distance / c); the cost is the timing misfit
-// (assumed ±30 ms per phone for clock sync and audio latency) plus a weak pull toward the
-// phones, which keeps two-phone cases sensible. The error radius covers every point whose
-// cost is within 4 of the best (about 2 sigma).
 const C = 343;
 const SIGMA_S = 0.03;
 function triangulate(obs: { lat: number; lng: number; at: number }[]) {
@@ -101,7 +89,6 @@ function triangulate(obs: { lat: number; lng: number; at: number }[]) {
 function zones(now: number) {
   const out: (LiveZone & { reportIds?: string[]; confirms?: number })[] = [];
 
-  // Sound: phones that heard a bang within 3 s and 800 m of each other form one event.
   const sounds = store.filter((e) => e.kind === "sound" && now - e.ts < TTL.soundConfirmed);
   const used = new Set<string>();
   for (const s of sounds.sort((a, b) => a.ts - b.ts)) {
@@ -113,10 +100,9 @@ function zones(now: number) {
     const devices = new Set(group.map((g) => g.device));
     const danger = group.some((g) => g.answer === "danger");
     const allSafe = group.every((g) => g.answer === "safe");
-    if (devices.size === 1 && allSafe) continue; // cancelled
+    if (devices.size === 1 && allSafe) continue;
     const confirmed = devices.size >= 2 || danger;
     if (now - s.ts > (confirmed ? TTL.soundConfirmed : TTL.soundCaution)) continue;
-    // One timed observation per phone; 2+ phones with synced clocks can be triangulated.
     const timed = [...new Map(group.filter((g) => typeof g.at === "number").map((g) => [g.device, g as Raw & { at: number }])).values()];
     const tri = timed.length >= 2 ? triangulate(timed) : null;
     out.push({
@@ -133,7 +119,6 @@ function zones(now: number) {
     });
   }
 
-  // Reports: counted once 3 different people report or confirm within 150 m.
   const hazard = (c?: string) => c !== "incident";
   const reports = store.filter(
     (e) => e.kind === "report" && now - e.ts < (hazard(e.category) ? TTL.reportHazard : TTL.reportIncident),
@@ -173,7 +158,6 @@ export async function GET() {
 export async function POST(request: Request) {
   const b = await request.json();
   const now = Date.now();
-  // Abuse limit: one sound event per device per 10 s, one report per category per device per hour.
   if (b.action === "sound" || b.action === "report") {
     const recent = store.find(
       (e) =>
@@ -194,8 +178,6 @@ export async function POST(request: Request) {
       at: Number.isFinite(b.at) && Math.abs(b.at - now) < 10_000 ? +b.at : undefined,
       votes: [],
     };
-    // Demo: three phones around the bang hear it at the times sound would take to reach them
-    // (plus ±6 ms of clock error and ±8 m of GPS error), this phone being one of them.
     if (b.action === "sound" && Array.isArray(b.demoOrigin)) {
       const [olng, olat] = b.demoOrigin.map(Number);
       const t0 = now - 900;

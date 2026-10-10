@@ -1,10 +1,7 @@
-// Road conditions for car and moped routes from Caltrans (public, no key):
-// active full closures become avoid zones; highway cameras near the route are shown
-// so drivers can see conditions. Cameras are used for road conditions only, never people.
 type Camera = { name: string; lng: number; lat: number; img: string };
 type Closure = { name: string; lng: number; lat: number; lng2: number; lat2: number; type: string; work: string; until: string };
 
-const BASE = "https://cwwp2.dot.ca.gov/data/d4"; // Bay Area district
+const BASE = "https://cwwp2.dot.ca.gov/data/d4";
 const HEADERS = { "User-Agent": "Mozilla/5.0 (Macintosh) NorthStar-hackathon", Accept: "application/json" };
 const cache = ((globalThis as unknown as { __ns_roads?: { at: number; cams: Camera[]; closures: Closure[] } }).__ns_roads ??= {
   at: 0,
@@ -67,8 +64,6 @@ async function refresh() {
   }
 }
 
-// Cameras showing Caltrans's "Temporarily Unavailable" image (~13.4 KB) are dropped; each
-// camera's check is cached for 5 minutes so only cameras near a route are ever fetched.
 const live = ((globalThis as unknown as { __ns_camok?: Map<string, { at: number; ok: boolean }> }).__ns_camok ??= new Map());
 async function isLive(c: Camera) {
   const hit = live.get(c.img);

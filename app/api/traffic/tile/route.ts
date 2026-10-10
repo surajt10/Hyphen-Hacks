@@ -1,5 +1,3 @@
-// Traffic-flow map tiles (green / orange / red roads), proxied so the TomTom key stays on
-// the server. /api/traffic/tile?z=13&x=1310&y=3166&style=relative0
 const STYLES = new Set(["relative0", "relative0-dark"]);
 
 export async function GET(request: Request) {

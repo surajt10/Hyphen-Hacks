@@ -1,4 +1,3 @@
-// Place categories: OpenStreetMap tags to search by type (not by name), plus the words people type.
 export const CATEGORIES: Record<string, { label: string; tags: string[]; words: RegExp }> = {
   restaurant: { label: "Restaurants", tags: ["amenity:restaurant", "amenity:fast_food", "amenity:food_court"], words: /^(food|eat|eats|restaurants?|dinner|lunch|breakfast|brunch|takeout)$/ },
   cafe: { label: "Cafes", tags: ["amenity:cafe"], words: /^(coffee|cafes?|café|cafés|tea|boba)$/ },
@@ -38,7 +37,6 @@ function miles(a: [number, number], b: [number, number]) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-// Nearest places with the given OpenStreetMap tags, via Photon's reverse lookup.
 export async function nearbyByTags(tags: string[], lat: number, lng: number, limit = 20, radiusKm = 2): Promise<Found[]> {
   const key = `${tags.join("|")}:${lat.toFixed(3)}:${lng.toFixed(3)}:${limit}`;
   const hit = cache.get(key);

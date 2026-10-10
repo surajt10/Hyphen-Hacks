@@ -1,5 +1,3 @@
-/* Incident replay ("time machine") card. Every class is prefixed rp- to stay clear of globals.css.
-   Colors come from the theme variables in globals.css; sizes are in em so "Large text" scales them. */
 .rp-card {
   --rp-red: #ff4d4d;
   --rp-amber: #f5a524;
@@ -39,7 +37,6 @@
   }
 }
 
-/* ---------- header ---------- */
 .rp-head {
   display: flex;
   align-items: center;
@@ -99,7 +96,6 @@
   color: var(--text);
 }
 
-/* ---------- play / time / counts / speed ---------- */
 .rp-main {
   display: flex;
   align-items: center;
@@ -188,7 +184,6 @@
   box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 3px var(--rp-red);
 }
 
-/* Segmented pills (speed and filter). */
 .rp-seg {
   flex: none;
   display: inline-flex;
@@ -230,7 +225,6 @@
   gap: 2px;
 }
 
-/* ---------- sparkline + slider + day labels (aligned to the slider thumb's travel) ---------- */
 .rp-track {
   display: grid;
   gap: 2px;
@@ -351,7 +345,6 @@
   white-space: nowrap;
 }
 
-/* ---------- filter + busiest place ---------- */
 .rp-foot {
   display: flex;
   align-items: center;
@@ -387,7 +380,6 @@
   white-space: nowrap;
 }
 
-/* ---------- phones ---------- */
 @media (max-width: 560px) {
   .rp-card {
     gap: 8px;
@@ -407,7 +399,6 @@
   .rp-time {
     font-size: 1.2em;
   }
-  /* Counts wrap here; the coloured dots separate them, so a wrapped line never starts with "·". */
   .rp-counts {
     column-gap: 12px;
   }

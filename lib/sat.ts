@@ -1,5 +1,3 @@
-// Esri World Imagery (aerial) for a box around a point, sized so the picture isn't stretched,
-// plus a helper that maps lng/lat to pixel positions on that image (for overlays).
 export function satellite(lng: number, lat: number, halfLng: number, W = 460, H = 260) {
   const halfLat = halfLng * (H / W) * Math.cos((lat * Math.PI) / 180);
   const b = [lng - halfLng, lat - halfLat, lng + halfLng, lat + halfLat];

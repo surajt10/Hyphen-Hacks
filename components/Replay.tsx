@@ -1,9 +1,5 @@
 "use client";
 
-// Incident replay ("time machine"): plays the last 7 days of incidents back on the live map,
-// hour by hour, so hotspots light up and fade. Self-contained: it owns one GeoJSON source and two
-// circle layers drawn above everything else, and puts them back whenever the basemap style is
-// swapped (the theme switch calls map.setStyle, which drops custom sources and layers).
 import "./replay.css";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import type { CircleLayerSpecification, ExpressionSpecification, GeoJSONSource, Map as MLMap } from "maplibre-gl";
@@ -13,8 +9,8 @@ import { EVENT_LABEL } from "@/lib/i18n";
 import { fmtDate, fmtHour, placeOf } from "@/lib/format";
 
 export type ReplayProps = {
-  map: MLMap | null; // the live MapLibre map instance (may be null briefly)
-  events: Ev[]; // all events (SF + Bay Area violent incidents and injury crashes)
+  map: MLMap | null;
+  events: Ev[];
   theme: "light" | "dark";
   onClose: () => void;
 };
@@ -31,24 +27,22 @@ const DOT = "replay-dot";
 
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
-const SPAN = 7 * DAY; // length of the replay
-const WINDOW = 6 * HOUR; // how long an incident stays on the map
-const BIN = 3 * HOUR; // sparkline bucket
-const NBINS = SPAN / BIN; // 56 bars
-const HOURS = SPAN / HOUR; // 168 slider steps
-// Playback starts 3 days before the latest incident (the busiest stretch of the data);
-// the slider still reaches back the full 7 days.
+const SPAN = 7 * DAY;
+const WINDOW = 6 * HOUR;
+const BIN = 3 * HOUR;
+const NBINS = SPAN / BIN;
+const HOURS = SPAN / HOUR;
 const LEAD = 72 * HOUR;
-const FRAME_MS = 100; // ~10 fps
-const SPEEDS = [1, 3, 6] as const; // replay hours per second
+const FRAME_MS = 100;
+const SPEEDS = [1, 3, 6] as const;
 type Speed = (typeof SPEEDS)[number];
-const PULSE_AGE = 0.35; // only the freshest incidents pulse (as a share of the 6 h window)
-const SPARK_H = 24; // sparkline viewBox height
-const MIN_BAR = 1.5; // keep single incidents visible on the sparkline
+const PULSE_AGE = 0.35;
+const SPARK_H = 24;
+const MIN_BAR = 1.5;
 
-const RED = "#ff4d4d"; // violence
-const AMBER = "#f5a524"; // injury crashes
-const HOT = "#ff6b6b"; // shootings: larger, brighter core
+const RED = "#ff4d4d";
+const AMBER = "#f5a524";
+const HOT = "#ff6b6b";
 const VIOLENCE = new Set(["shooting", "carjacking", "robbery", "agg_assault", "assault", "threat", "car_breakin"]);
 const K_CRIME = 0;
 const K_CRASH = 1;
@@ -66,9 +60,6 @@ const FILTERS: { id: Filter; label: string; aria: string }[] = [
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
-// Event times are wall-clock times stored as UTC (Date.parse("YYYY-MM-DD") is UTC midnight), so
-// they are read back with the UTC getters: the labels show the hour the incident was logged,
-// with no time-zone or daylight-saving shifts.
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const timeLabel = (ms: number) => {
@@ -77,24 +68,21 @@ const timeLabel = (ms: number) => {
 };
 const ymd = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-// ---------- data ----------
-
-// Every event in the replay range, sorted by time, so each tick binary-searches its window.
 type Index = {
   start: number;
   end: number;
-  ts: Float64Array; // ascending
+  ts: Float64Array;
   ev: Ev[];
-  kind: Uint8Array; // K_CRIME | K_CRASH | K_SHOOT
-  place: (string | undefined)[]; // placeOf(e.x), filled lazily
-  crimeBins: number[]; // violent incidents (shootings included) per 3 h
+  kind: Uint8Array;
+  place: (string | undefined)[];
+  crimeBins: number[];
   crashBins: number[];
 };
 
 function buildIndex(events: Ev[]): Index | null {
   const n = events.length;
   const all = new Float64Array(n);
-  const days = new Map<string, number>(); // ~700 distinct dates for ~44k events
+  const days = new Map<string, number>();
   let end = -Infinity;
   for (let i = 0; i < n; i++) {
     const e = events[i];
@@ -105,7 +93,6 @@ function buildIndex(events: Ev[]): Index | null {
   }
   if (!Number.isFinite(end)) return null;
   const start = end - SPAN;
-  // Keep what the replay can show: (start - 6 h, end]. NaN timestamps fail the comparison.
   const keep: number[] = [];
   for (let i = 0; i < n; i++) if (all[i] > start - WINDOW && kindOf(events[i].t) >= 0) keep.push(i);
   keep.sort((a, b) => all[a] - all[b] || a - b);
@@ -123,7 +110,6 @@ function buildIndex(events: Ev[]): Index | null {
   return { start, end, ts, ev, kind, place: new Array(keep.length), crimeBins, crashBins };
 }
 
-// First index whose timestamp is > x.
 function upper(ts: Float64Array, x: number) {
   let lo = 0;
   let hi = ts.length;
@@ -139,7 +125,6 @@ type Win = { fc: FC; violent: number; crashes: number; shootings: number; busies
 const EMPTY_FC: FC = { type: "FeatureCollection", features: [] };
 const EMPTY_WIN: Win = { fc: EMPTY_FC, violent: 0, crashes: 0, shootings: 0, busiest: null };
 
-// Incidents in (t - 6 h, t]. `clock` (ms) drives the glow pulse; null keeps it still.
 function windowAt(ix: Index, t: number, filter: Filter, clock: number | null): Win {
   const lo = upper(ix.ts, t - WINDOW);
   const hi = upper(ix.ts, t);
@@ -150,12 +135,11 @@ function windowAt(ix: Index, t: number, filter: Filter, clock: number | null): W
   let shootings = 0;
   let best = "";
   let bestN = 0;
-  // Newest first, so ties for the busiest place go to the most recent one.
   for (let i = hi - 1; i >= lo; i--) {
     const k = ix.kind[i];
     if (!passes(k, filter)) continue;
     const e = ix.ev[i];
-    const age = (t - ix.ts[i]) / WINDOW; // 0 = just happened, 1 = about to drop off
+    const age = (t - ix.ts[i]) / WINDOW;
     if (k === K_CRASH) crashes++;
     else violent++;
     if (k === K_SHOOT) shootings++;
@@ -178,13 +162,9 @@ function windowAt(ix: Index, t: number, filter: Filter, clock: number | null): W
   return { fc: { type: "FeatureCollection", features }, violent, crashes, shootings, busiest };
 }
 
-// ---------- map layers ----------
-
 const AGE: ExpressionSpecification = ["get", "age"];
 const KIND: ExpressionSpecification = ["get", "kind"];
-// Pixel sizes shrink over the whole Bay Area and grow at street level.
 const byZoom = (px: ExpressionSpecification): ExpressionSpecification => ["interpolate", ["linear"], ["zoom"], 8, ["*", 0.55, px], 12, px, 16, ["*", 1.7, px]];
-// Newest on top, shootings above everything.
 const SORT: ExpressionSpecification = ["+", ["match", KIND, "shooting", 2, 0], ["-", 1, AGE]];
 const DOT_OPACITY: ExpressionSpecification = ["interpolate", ["linear"], AGE, 0, 1, 0.35, 0.8, 1, ["match", KIND, "shooting", 0.5, 0.2]];
 const glowOpacity = (th: Theme): ExpressionSpecification => [
@@ -230,13 +210,11 @@ const dotLayer = (th: Theme): CircleLayerSpecification => ({
   },
 });
 
-// ---------- component ----------
-
 export default function Replay(p: ReplayProps) {
   const { map, events, theme, onClose } = p;
   const ix = useMemo(() => buildIndex(events), [events]);
 
-  const [t, setT] = useState(-Infinity); // replay clock in ms, clamped into [start, end] below
+  const [t, setT] = useState(-Infinity);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(3);
   const [filter, setFilter] = useState<Filter>("all");
@@ -251,7 +229,6 @@ export default function Replay(p: ReplayProps) {
   const atEnd = !!ix && cur >= ix.end;
   const label = ix ? timeLabel(cur) : events.length ? "No incident data" : "Loading incidents…";
 
-  // Reduced motion: start paused and keep the glow still. Otherwise play right away.
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
     setReduced(mq.matches);
@@ -261,7 +238,6 @@ export default function Replay(p: ReplayProps) {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  // Playback: ~10 fps, advancing speed/10 replay hours per frame; stops at the end.
   useEffect(() => {
     if (!playing || !ix) return;
     let raf = 0;
@@ -286,7 +262,6 @@ export default function Replay(p: ReplayProps) {
     [ix, cur, filter, playing, reduced],
   );
 
-  // Map: one source + two layers on top. Re-added after every style swap, removed on unmount.
   useEffect(() => {
     if (!map) return;
     const install = () => {
@@ -295,7 +270,6 @@ export default function Replay(p: ReplayProps) {
         if (!map.getLayer(GLOW)) map.addLayer(glowLayer(themeRef.current));
         if (!map.getLayer(DOT)) map.addLayer(dotLayer(themeRef.current));
       } catch {
-        // The style is still loading; "style.load" calls this again once it's ready.
       }
     };
     install();
@@ -307,7 +281,6 @@ export default function Replay(p: ReplayProps) {
         if (map.getLayer(GLOW)) map.removeLayer(GLOW);
         if (map.getSource(SRC)) map.removeSource(SRC);
       } catch {
-        // The map or its style is already gone.
       }
     };
   }, [map]);
@@ -322,7 +295,6 @@ export default function Replay(p: ReplayProps) {
         map.setPaintProperty(DOT, "circle-stroke-width", dotStrokeWidth(theme));
       }
     } catch {
-      // A style swap is in flight; "style.load" re-adds the layers with this theme.
     }
   }, [map, theme]);
 
@@ -330,8 +302,6 @@ export default function Replay(p: ReplayProps) {
     dataRef.current = win.fc;
     void map?.getSource<GeoJSONSource>(SRC)?.setData(win.fc);
   }, [map, win.fc]);
-
-  // ---------- controls ----------
 
   const seek = useCallback(
     (ms: number) => {
@@ -358,14 +328,12 @@ export default function Replay(p: ReplayProps) {
     setSpeed(s);
   };
 
-  // Clicking or dragging on the sparkline scrubs too (the slider is the keyboard control).
   const scrub = (e: ReactPointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     if (!ix || !r.width) return;
     seek(ix.start + Math.round(clamp((e.clientX - r.left) / r.width, 0, 1) * HOURS) * HOUR);
   };
 
-  // Sparkline: incidents per 3 h for the current filter, square-root scaled so quiet stretches still show.
   const bars = useMemo(() => {
     if (!ix) return [];
     const pick = (i: number): [number, number] => [filter === "crash" ? 0 : ix.crimeBins[i], filter === "crime" ? 0 : ix.crashBins[i]];
@@ -379,8 +347,6 @@ export default function Replay(p: ReplayProps) {
     });
   }, [ix, filter]);
 
-  // Day spans (wall-clock midnights) for the separators and the labels under the slider.
-  // Partial days at either end are labelled only when they have room (and never on phones).
   const days = useMemo(() => {
     const out: { at: number; mid: number; label: string; wide: boolean; edge: boolean }[] = [];
     if (!ix) return out;
@@ -393,8 +359,8 @@ export default function Replay(p: ReplayProps) {
     return out;
   }, [ix]);
 
-  const hour = ix ? Math.floor((cur - ix.start) / HOUR + 1e-6) : 0; // slider position
-  const head = ix ? (cur - ix.start) / BIN : 0; // playhead, in bars
+  const hour = ix ? Math.floor((cur - ix.start) / HOUR + 1e-6) : 0;
+  const head = ix ? (cur - ix.start) / BIN : 0;
   const lensFrom = Math.max(0, head - WINDOW / BIN);
   const nowFirst = Math.floor(lensFrom);
   const nowLast = Math.min(NBINS - 1, Math.floor(head));

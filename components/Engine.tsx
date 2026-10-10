@@ -1,10 +1,8 @@
 "use client";
 
-// "How it works" view: the scoring engine and every data feed behind it, live.
-// Click any spot on the map to see exactly how its risk was calculated.
 import { useEffect, useMemo, useState } from "react";
 import { cellToBoundary, cellToLatLng } from "h3-js";
-import { ArrowLeft, Crosshair, Satellite, LayoutDashboard, History, ChartColumnBig } from "lucide-react";
+import { ArrowLeft, Crosshair, LayoutDashboard, History, ChartColumnBig } from "lucide-react";
 import { MODES, MODE_MULT, TYPE_WEIGHT, contribution, type CellRisk, type Ev, type LiveZone, type Mode, LIVE_SCORE } from "@/lib/scoring";
 import { EVENT_LABEL } from "@/lib/i18n";
 import { fmtDate, fmtHour, placeOf } from "@/lib/format";
@@ -100,7 +98,7 @@ export default function Engine(p: Props) {
     const t0 = p.when.getTime();
     for (const e of p.events) {
       const c = contribution(e, p.mode, p.when);
-      const base = c.value / (c.tod || 1); // ignore the hour factor so the chart shows when risk happens
+      const base = c.value / (c.tod || 1);
       if (base) {
         hour[e.h] += base;
         const [y, m, d] = e.d.split("-").map(Number);
@@ -277,7 +275,6 @@ export default function Engine(p: Props) {
               <div className="cams live-cams">
                 {(p.sources?.cameras ?? []).slice(0, 4).map((c) => (
                   <figure key={c.img}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={`${c.img}?t=${minute}`} alt={`Live camera: ${c.name}`} loading="lazy" />
                     <figcaption>
                       <span className="rec" /> {c.name}
@@ -292,7 +289,6 @@ export default function Engine(p: Props) {
                 Satellite view of the map center (Esri)
               </h3>
               <figure className="sat">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={sat.url} alt="Satellite imagery of the map center" />
                 <span className="sat-cross" aria-hidden />
                 <figcaption className="mono">
@@ -467,7 +463,6 @@ function CellView(p: Props & { cell: string; scores: number[]; minute: number })
       </button>
 
       <figure className="sat cell-sat">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={sat.url} alt="Satellite imagery of this block" />
         <svg viewBox={`0 0 ${sat.W} ${sat.H}`} aria-hidden>
           <polygon points={hexPts} className="sat-hex" />
@@ -504,7 +499,6 @@ function CellView(p: Props & { cell: string; scores: number[]; minute: number })
 
       {nearestCam && nearestCam.d < 0.6 && (
         <figure className="cams single">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={`${nearestCam.img}?t=${p.minute}`} alt={`Nearest live camera: ${nearestCam.name}`} />
           <figcaption>
             <span className="rec" /> Nearest live camera · {nearestCam.name} · {nearestCam.d.toFixed(1)} mi
@@ -568,8 +562,6 @@ function CellView(p: Props & { cell: string; scores: number[]; minute: number })
   );
 }
 
-// Situational awareness: anomaly watch, the phone sensor grid with dispatch corroboration,
-// a next-hour forecast and incident constellations. Events and places only, never people.
 function Intel(p: Props) {
   const placeFor = (cell: string) => {
     const evs = p.cells.get(cell)?.events ?? [];
@@ -706,8 +698,6 @@ function Intel(p: Props) {
   );
 }
 
-// "Add a phone": a QR code and link that open NorthStar with the listen prompt, so anyone in
-// the room can join the sensor grid in two taps.
 export function JoinGrid() {
   const [url, setUrl] = useState("");
   const [copied, setCopied] = useState(false);

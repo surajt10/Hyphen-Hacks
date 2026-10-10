@@ -1,22 +1,12 @@
-/* NorthStar Command: the city operations overlay (components/Command.tsx).
-   Every class is prefixed cmd- so nothing here touches the rest of the app. Colours come from the
-   app's theme variables, so both themes work; the overlay normally runs in dark.
-   The look is deliberately quiet: solid neutral surfaces, 1px borders, rows divided by hairlines.
-   Colour is kept to small status dots (critical, warning, ok) that always sit next to text, and the
-   accent only marks interactive state (focus, the current hour).
-   Desktop (>= 1100px): panels frame a transparent map window. Narrower: a bottom sheet. */
-
-/* ---------- tokens ---------- */
 .cmd-root {
   --cmd-left: clamp(280px, 24vw, 340px);
   --cmd-right: clamp(300px, 25.5vw, 360px);
-  --cmd-pad: 14px; /* panel side padding; full-width rows bleed out by the same amount */
+  --cmd-pad: 14px;
   --cmd-radius: 8px;
   --cmd-line: var(--border);
   --cmd-hover: var(--surface-2);
   --cmd-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
   --cmd-mono: var(--font-mono), ui-monospace, Menlo, monospace;
-  /* status: small dots only */
   --cmd-crit: #e5484d;
   --cmd-warn: #d29922;
   --cmd-ok: #3fb950;
@@ -27,12 +17,11 @@
   --cmd-shadow: none;
 }
 
-/* ---------- layout ---------- */
 .cmd-root {
   position: fixed;
   inset: 0;
   z-index: 8;
-  pointer-events: none; /* the map window in the middle stays draggable */
+  pointer-events: none;
   display: grid;
   grid-template-columns: var(--cmd-left) minmax(0, 1fr) var(--cmd-right);
   grid-template-rows: 52px auto minmax(0, 1fr) auto;
@@ -58,7 +47,7 @@
   outline-offset: 2px;
 }
 .cmd-sheet {
-  display: contents; /* desktop: its panels are placed straight onto the grid */
+  display: contents;
 }
 .cmd-col {
   pointer-events: auto;
@@ -89,7 +78,6 @@
   border: 0;
 }
 
-/* ---------- panels ---------- */
 .cmd-panel {
   position: relative;
   flex: none;
@@ -102,7 +90,7 @@
   pointer-events: auto;
 }
 .cmd-flush {
-  padding-bottom: 0; /* its rows run to the bottom edge */
+  padding-bottom: 0;
 }
 .cmd-ph {
   display: flex;
@@ -152,7 +140,6 @@
   padding-bottom: 12px;
 }
 
-/* status dots */
 .cmd-dot,
 .cmd-sev {
   display: inline-block;
@@ -177,7 +164,6 @@
   background: var(--cmd-idle);
 }
 
-/* ---------- top bar ---------- */
 .cmd-top {
   grid-area: top;
   position: relative;
@@ -318,12 +304,11 @@
   color: var(--text-3);
 }
 
-/* ---------- KPI strip: one bordered bar, cells split by 1px rules ---------- */
 .cmd-kpis {
   grid-area: kpi;
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1px; /* the strip's own background shows through as the dividers */
+  gap: 1px;
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--cmd-line);
@@ -387,7 +372,6 @@ button.cmd-kpi:hover {
   color: var(--text-2);
 }
 
-/* ---------- camera wall ---------- */
 .cmd-cams {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -490,7 +474,6 @@ button.cmd-kpi:hover {
   animation: cmd-shimmer 1.6s linear infinite;
 }
 
-/* ---------- full-width row lists (sensor grid, data feeds, event feed, constellations, next hour) ---------- */
 .cmd-kv,
 .cmd-feeds,
 .cmd-feed-list,
@@ -507,7 +490,6 @@ button.cmd-kpi:hover {
   border-top: 1px solid var(--cmd-line);
 }
 
-/* sensor grid */
 .cmd-kv {
   border-bottom: 1px solid var(--cmd-line);
 }
@@ -530,7 +512,6 @@ button.cmd-kpi:hover {
   color: var(--text);
 }
 
-/* data feeds */
 .cmd-feeds li {
   display: grid;
   grid-template-columns: 6px minmax(0, 1fr) auto;
@@ -552,7 +533,6 @@ button.cmd-kpi:hover {
   color: var(--text-3);
 }
 
-/* ---------- live event feed ---------- */
 .cmd-feed {
   display: flex;
   flex: 1 1 auto;
@@ -669,7 +649,6 @@ button.cmd-kpi:hover {
   animation: cmd-fresh 2.4s ease-out;
 }
 
-/* ---------- constellations + next hour ---------- */
 .cmd-row {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) auto;
@@ -738,7 +717,6 @@ button.cmd-kpi:hover {
   color: var(--text);
 }
 
-/* ---------- bottom strip: calls by hour + engine ticker ---------- */
 .cmd-bottom {
   grid-area: bottom;
   display: grid;
@@ -936,7 +914,6 @@ button.cmd-kpi:hover {
   color: var(--text-3);
 }
 
-/* ---------- motion ---------- */
 @keyframes cmd-in {
   from {
     opacity: 0;
@@ -984,7 +961,6 @@ button.cmd-kpi:hover {
   }
 }
 
-/* ---------- smaller screens ---------- */
 @media (max-width: 1279.98px) {
   .cmd-status {
     display: none;
@@ -1010,7 +986,6 @@ button.cmd-kpi:hover {
   }
 }
 
-/* Below 1100px everything stacks into a scrollable bottom sheet; the map shows above it. */
 @media (max-width: 1099.98px) {
   .cmd-root {
     display: flex;

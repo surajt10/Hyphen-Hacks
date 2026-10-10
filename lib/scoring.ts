@@ -1,6 +1,3 @@
-// Risk model: every event adds weight to its H3 cell, scaled by how serious it is,
-// how it affects the chosen travel mode, how old it is and whether it happened near
-// the hour of travel. See the design doc, "Safety risk model".
 import { cellToLatLng, gridDisk, latLngToCell } from "h3-js";
 
 export type Mode = "walk" | "wheelchair" | "bike" | "scooter" | "moped" | "car";
@@ -22,7 +19,6 @@ export const TYPE_WEIGHT: Record<string, number> = {
   crash_bike: 3,
   crash_moto: 3,
   crash_vehicle: 3,
-  // An open 311 streetlight outage, counted only after sunset (see App: darkEvents).
   dark: 2.5,
 };
 
@@ -36,13 +32,10 @@ export const MODE_MULT: Record<Mode, Record<string, number>> = {
   car: { shooting: 1, carjacking: 1, robbery: 0.1, agg_assault: 0.1, assault: 0.1, threat: 0.05, car_breakin: 0, crash_ped: 0.2, crash_bike: 0.2, crash_moto: 0.3, crash_vehicle: 0.5 },
 };
 
-// Crime fades over ~a month (SF's public feed is sparse); crash hotspots reflect
-// street design, so they fade over a year.
 export const TAU_DAYS = { crime: 30, crash: 365 };
 
 export type CellRisk = { score: number; events: Ev[] };
 
-// One event's share of a cell's risk, with every factor kept so it can be explained.
 export type Contribution = { e: Ev; weight: number; fatal: number; mult: number; ageDays: number; decay: number; tod: number; value: number };
 
 export function contribution(e: Ev, mode: Mode, when: Date): Contribution {
@@ -71,7 +64,6 @@ export function scoreCells(events: Ev[], mode: Mode, when: Date): Map<string, Ce
   return cells;
 }
 
-// Live zones from phones (sound alerts, confirmed reports) override the history.
 export type LiveZone = {
   id: string;
   kind: "sound" | "report";
@@ -82,7 +74,6 @@ export type LiveZone = {
   count: number;
   category?: string;
   points?: [number, number][];
-  // Acoustic triangulation (2+ phones with synced clocks): estimated origin and error radius.
   origin?: [number, number];
   radiusM?: number;
   spreadMs?: number;
@@ -107,7 +98,6 @@ export function percentile(values: number[], p: number) {
   return s[Math.min(s.length - 1, Math.floor(p * s.length))];
 }
 
-// Route exposure: score of each cell the route passes, times minutes spent in it.
 export function routeRisk(
   coords: [number, number][],
   minutes: number,

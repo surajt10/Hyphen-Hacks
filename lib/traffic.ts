@@ -1,5 +1,3 @@
-// Live traffic incidents from TomTom, fetched on the server so the API key never reaches
-// the browser. Cached for 3 minutes and shared by every phone.
 export type TrafficIncident = {
   id: string;
   kind: "accident" | "jam" | "closure" | "roadworks" | "hazard" | "other";
@@ -9,13 +7,12 @@ export type TrafficIncident = {
   magnitude: number;
   lng: number;
   lat: number;
-  full: boolean; // the whole road is closed (routes for cars and mopeds avoid it)
+  full: boolean;
   line: [number, number][];
   since?: number;
 };
 
 const KIND: Record<number, TrafficIncident["kind"]> = { 0: "other", 1: "accident", 2: "hazard", 3: "hazard", 4: "hazard", 5: "hazard", 6: "jam", 7: "closure", 8: "closure", 9: "roadworks", 10: "hazard", 11: "hazard", 14: "hazard" };
-// The API allows 10,000 sq km per request, so the Bay Area is fetched in two halves.
 const BOXES = ["-122.75,37.75,-121.55,38.35", "-122.75,37.15,-121.55,37.75"];
 const FIELDS = "{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},startTime,from,to,length,delay,roadNumbers}}}";
 const TTL = 3 * 60_000;
@@ -41,7 +38,6 @@ function toIncident(r: Raw): TrafficIncident | null {
   const coords = (r.geometry.type === "Point" ? [r.geometry.coordinates] : r.geometry.coordinates) as [number, number][];
   if (!coords.length) return null;
   const kind = KIND[p.iconCategory] ?? "other";
-  // Accidents and queues: the incident sits at the downstream end. Closures: the middle.
   const at = kind === "accident" || kind === "jam" ? coords[coords.length - 1] : coords[Math.floor(coords.length / 2)];
   const raw = p.events?.[0]?.description ?? "Incident";
   const desc = raw === "Closed" ? "Road closed" : raw;

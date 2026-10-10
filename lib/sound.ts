@@ -1,16 +1,9 @@
-// On-device gunshot detection. Audio never leaves the phone and is never stored:
-// a cheap loudness check finds sharp bangs, then Google's YAMNet audio classifier
-// (TensorFlow.js) decides whether it sounds like gunfire rather than fireworks.
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 const TFJS_URL = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js";
 const YAMNET_URL = "https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1";
 
-// YAMNet / AudioSet class indices.
-const GUN = [421, 422, 423, 424, 425]; // gunshot, machine gun, fusillade, artillery, cap gun
-const FIREWORKS = [426, 427]; // fireworks, firecracker
+const GUN = [421, 422, 423, 424, 425];
+const FIREWORKS = [426, 427];
 
-// onset: when the sound arrived (epoch ms, sub-millisecond), used for triangulation.
 export type Detection = { confidence: number; label: "gunshot" | "loud-bang"; at: number; onset?: number };
 
 let modelPromise: Promise<any> | null = null;
@@ -43,7 +36,6 @@ function resampleTo16k(buf: Float32Array, rate: number) {
   return out;
 }
 
-// Fireworks nights get a stricter threshold.
 function gunThreshold(d = new Date()) {
   const md = `${d.getMonth() + 1}-${d.getDate()}`;
   return ["7-4", "7-5", "12-31", "1-1"].includes(md) ? 0.5 : 0.25;
@@ -60,7 +52,6 @@ export class SoundWatcher {
   modelReady = false;
 
   async start(onDetect: (d: Detection) => void, onLevel?: (db: number) => void) {
-    // Raw audio: browser noise suppression and auto-gain would flatten a gunshot.
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
     });
@@ -87,13 +78,10 @@ export class SoundWatcher {
       const rms = Math.sqrt(sum / data.length);
       onLevel?.(20 * Math.log10(rms + 1e-6));
       const now = performance.now();
-      // A gunshot is loud, starts sharply and is short: a big jump over the background level.
       const impulse = peak > 0.4 && rms > this.background * 6 && rms > 0.04;
       this.background = this.background * 0.98 + Math.min(rms, 0.2) * 0.02;
       if (impulse && now > this.cooldownUntil) {
         this.cooldownUntil = now + 3000;
-        // Exact arrival time: the first sample above half the peak, mapped from audio time to
-        // the wall clock (accurate to a few ms; the server syncs clocks between phones).
         let idx = 0;
         while (idx < data.length && Math.abs(data[idx]) < peak * 0.5) idx++;
         const ctx = this.ctx!;
@@ -101,7 +89,6 @@ export class SoundWatcher {
         const ts = ctx.getOutputTimestamp?.();
         const perf = ts?.performanceTime !== undefined && ts.contextTime !== undefined ? ts.performanceTime + (onsetCtx - ts.contextTime) * 1000 : now - ((data.length - idx) / rate) * 1000;
         const onset = performance.timeOrigin + perf;
-        // Let ~300 ms of the sound arrive, then classify the last second of audio.
         setTimeout(() => this.classify(rate).then((d) => d && onDetect({ ...d, onset })), 300);
       }
     };

@@ -1,13 +1,10 @@
 "use client";
 
-// NorthStar Command: a city operations view drawn around a transparent window onto the live
-// map. Panels sit on the edges and the middle stays clear, so the map can still be dragged.
-// Everything here is about events and places, never people: no identities, faces, plates or
-// individual tracks.
 import "./command.css";
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { cellToLatLng } from "h3-js";
-import { ShieldCheck, X } from "lucide-react";
+import { X } from "lucide-react";
+import Logo from "./Logo";
 import type { CellRisk, Ev, LiveZone } from "@/lib/scoring";
 import type { Anomaly, Call, Constellation, Forecast } from "@/lib/intel";
 import { DICTS, EVENT_LABEL, type Key } from "@/lib/i18n";
@@ -17,10 +14,10 @@ import { JoinGrid, type LogEntry, type Sources } from "./Engine";
 export type TrafficIncident = {
   id: string;
   kind: "accident" | "jam" | "closure" | "roadworks" | "hazard" | "other";
-  title: string; // e.g. "Accident on US-101 N"
-  detail: string; // e.g. "Stationary traffic · 6 min delay"
-  delayMin: number; // minutes of delay (0 if unknown)
-  magnitude: number; // 0..4 severity
+  title: string;
+  detail: string;
+  delayMin: number;
+  magnitude: number;
   lng: number;
   lat: number;
 };
@@ -29,34 +26,33 @@ export type CommandProps = {
   theme: "light" | "dark";
   events: Ev[];
   cells: Map<string, CellRisk>;
-  zones: LiveZone[]; // live phone gunshot alerts (kind "sound") and community reports (kind "report")
-  sources: Sources | null; // live feeds: cameras, calls24, feeds, weather
+  zones: LiveZone[];
+  sources: Sources | null;
   anomalies: Anomaly[];
   constellations: Constellation[];
   forecast: Forecast;
   sensors: { phones: number; cells: { cell: string; n: number }[] };
-  corroborated: Map<string, Call>; // sound-alert id -> matching SFPD gun call
-  traffic: TrafficIncident[]; // live TomTom incidents (may be empty)
-  log: LogEntry[]; // engine event log, newest first
+  corroborated: Map<string, Call>;
+  traffic: TrafficIncident[];
+  log: LogEntry[];
   onExit: () => void;
-  onFocus: (lng: number, lat: number, zoom?: number) => void; // fly the map there
+  onFocus: (lng: number, lat: number, zoom?: number) => void;
 };
 
 type Pt = { lat: number; lng: number };
 type Kind = "sound" | "report" | "anomaly" | "traffic" | "call";
-// Severity only ever drives a small status dot, always next to text that says the same thing.
 type Level = "crit" | "warn" | "info";
 type Item = {
   id: string;
   kind: Kind;
-  t: number; // when it happened (traffic: when this console first saw it)
-  seen: number; // first sighting here; negative = already there when the console opened
+  t: number;
+  seen: number;
   title: string;
   place: string;
   lat: number;
   lng: number;
   level: Level;
-  verified?: Call; // SFPD gun call that backs up a phone sound alert
+  verified?: Call;
 };
 
 const FEED_MAX = 40;
@@ -73,7 +69,6 @@ const KIND: Record<Kind, string> = {
   call: "SFPD",
 };
 
-// ---------- small helpers ----------
 const titleCase = (s: string) =>
   s
     .toLowerCase()
@@ -102,7 +97,6 @@ const cellPoint = (cell: string): Pt | null => {
   }
 };
 
-// ---------- hooks ----------
 const REDUCED = "(prefers-reduced-motion: reduce)";
 const subscribeMotion = (cb: () => void) => {
   const m = window.matchMedia(REDUCED);
@@ -113,7 +107,6 @@ function useReducedMotion() {
   return useSyncExternalStore(subscribeMotion, () => window.matchMedia(REDUCED).matches, () => false);
 }
 
-// Re-render on a beat aligned to the wall clock (each second, each minute, ...).
 function useNow(ms: number) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -129,7 +122,6 @@ function useNow(ms: number) {
   return now;
 }
 
-// Numbers ease to their new value from wherever they were, instead of jumping.
 function useCountUp(target: number, still: boolean) {
   const [shown, setShown] = useState(0);
   const at = useRef(0);
@@ -150,7 +142,6 @@ function useCountUp(target: number, still: boolean) {
   return still ? target : shown;
 }
 
-// One merged, newest-first timeline of everything live.
 function useFeed(p: CommandProps, calls: Call[], near: (lat: number, lng: number) => string) {
   const seen = useRef(new Map<string, number>());
   const trafficPrimed = useRef(false);
@@ -197,7 +188,6 @@ function useFeed(p: CommandProps, calls: Call[], near: (lat: number, lng: number
       });
     }
 
-    // Only the most serious traffic incidents: a ticker full of minor jams is noise.
     for (const x of [...traffic].sort(bySeverity).slice(0, TRAFFIC_MAX)) {
       add({ id: `t:${x.id}`, kind: "traffic", t: 0, title: x.title || "Traffic incident", place: x.detail || near(x.lat, x.lng), lat: x.lat, lng: x.lng, level: x.magnitude >= 3 ? "warn" : "info" });
     }
@@ -210,10 +200,6 @@ function useFeed(p: CommandProps, calls: Call[], near: (lat: number, lng: number
       add({ id, kind: "call", t: c.ts, title: sentence(c.type), place: `near ${titleCase(c.where)}`, lat: c.lat, lng: c.lng, level: "info" });
     }
 
-    // First sightings mark genuinely new arrivals. Items already there when the console
-    // opened, arriving as one big batch (a feed reload) or in the first traffic load don't
-    // count as new. Traffic incidents carry no timestamp: new ones sort by when they first
-    // appeared; ones already active sort behind the last half hour of timed events.
     const now = Date.now();
     const unseen = all.filter((it) => !seen.current.has(it.id));
     const bulk = now - opened < 6000 || unseen.length > 12;
@@ -231,7 +217,6 @@ function useFeed(p: CommandProps, calls: Call[], near: (lat: number, lng: number
   }, [zones, anomalies, traffic, corroborated, calls, near, opened]);
 }
 
-// ---------- the view ----------
 export default function Command(p: CommandProps) {
   const still = useReducedMotion();
   const calls = p.sources?.calls24 ?? NO_CALLS;
@@ -240,7 +225,6 @@ export default function Command(p: CommandProps) {
   const loading = !p.sources;
   const dark = p.theme === "dark";
 
-  // Esc leaves command mode, unless someone is typing or a control inside used the key.
   const exit = useRef(p.onExit);
   useEffect(() => {
     exit.current = p.onExit;
@@ -256,7 +240,6 @@ export default function Command(p: CommandProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Name a spot after the closest recorded incident or dispatch call (within ~0.3 mi).
   const near = useMemo(() => {
     const events = p.events;
     return (lat: number, lng: number) => {
@@ -277,7 +260,6 @@ export default function Command(p: CommandProps) {
     };
   }, [p.events, calls]);
 
-  // Most common street name among a block's recorded events.
   const placeFor = useMemo(() => {
     const memo = new Map<string, string>();
     return (cell: string) => {
@@ -328,7 +310,7 @@ export default function Command(p: CommandProps) {
     <div className={`cmd-root ${dark ? "cmd-dark" : "cmd-light"}`}>
       <header className="cmd-top">
         <div className="cmd-brand">
-          <ShieldCheck className="cmd-mark" size={16} aria-hidden="true" />
+          <Logo className="cmd-mark" size={18} />
           <h1 className="cmd-title">NorthStar Command</h1>
           <span className="cmd-sub">San Francisco Bay Area</span>
           <span className="cmd-live">
@@ -431,7 +413,6 @@ export default function Command(p: CommandProps) {
   );
 }
 
-// ---------- pieces ----------
 function Head({ id, title, meta }: { id: string; title: string; meta?: ReactNode }) {
   return (
     <div className="cmd-ph">
@@ -488,7 +469,7 @@ function Kpi({ label, value, note, level, action, onClick, still }: KpiProps) {
 
 function CameraWall({ cams, loading, onFocus }: { cams: Sources["cameras"]; loading: boolean; onFocus: CommandProps["onFocus"] }) {
   const id = useId();
-  const minute = Math.floor(useNow(60000) / 60000); // new frame from every camera each minute
+  const minute = Math.floor(useNow(60000) / 60000);
   const [lost, setLost] = useState<ReadonlySet<string>>(() => new Set());
   const [ready, setReady] = useState<ReadonlySet<string>>(() => new Set());
   const shown = cams.filter(hasPoint).slice(0, 6);
@@ -505,7 +486,6 @@ function CameraWall({ cams, loading, onFocus }: { cams: Sources["cameras"]; load
                 {down ? (
                   <span className="cmd-cam-lost">No signal</span>
                 ) : (
-                  // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={src}
                     alt=""
@@ -596,10 +576,10 @@ function FeedsCard({ feeds, loading }: { feeds: Sources["feeds"]; loading: boole
 
 function EventFeed({ items, total, loading, onFocus }: { items: Item[]; total: number; loading: boolean; onFocus: CommandProps["onFocus"] }) {
   const id = useId();
-  useNow(15000); // keeps "4 min ago" current
+  useNow(15000);
   const [opened] = useState(() => Date.now());
   const t = Date.now();
-  const intro = t - opened < 1500; // stagger the first paint only; later rows slide in on their own
+  const intro = t - opened < 1500;
   const news = items.find((it) => it.seen > 0 && t - it.seen < 10000 && (it.kind === "sound" || it.kind === "anomaly"));
   return (
     <section className="cmd-panel cmd-flush cmd-feed cmd-p-feed" aria-labelledby={id}>
@@ -735,7 +715,6 @@ function NextHour({ forecast, placeFor, onFocus }: { forecast: Forecast; placeFo
   );
 }
 
-// 24 hourly columns ending with the current (partial) hour, which is highlighted.
 function HourChart({ calls, loading }: { calls: Call[]; loading: boolean }) {
   const id = useId();
   const now = useNow(60000);
@@ -762,7 +741,7 @@ function HourChart({ calls, loading }: { calls: Call[]; loading: boolean }) {
   const onKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const k = e.key;
     if (k === "Escape" && sel !== null) {
-      e.preventDefault(); // close the readout without leaving command mode
+      e.preventDefault();
       setSel(null);
       return;
     }
@@ -833,7 +812,6 @@ function HourChart({ calls, loading }: { calls: Call[]; loading: boolean }) {
   );
 }
 
-// The latest engine log lines, scrolling past in one line (static and scrollable when motion is reduced).
 function LogTicker({ log, still }: { log: LogEntry[]; still: boolean }) {
   const items = log.slice(0, 8);
   const chars = items.reduce((n, l) => n + l.text.length + 14, 0);
@@ -843,7 +821,6 @@ function LogTicker({ log, still }: { log: LogEntry[]; still: boolean }) {
       <span className="cmd-ticker-lbl">Engine</span>
       {items.length ? (
         <div className="cmd-ticker-view" role="marquee" aria-label="Latest engine log lines" tabIndex={0}>
-          {/* Restart from the newest line whenever one arrives. */}
           <div className="cmd-ticker-track" key={items[0].t} style={style}>
             {(still ? [0] : [0, 1]).map((copy) => (
               <span key={copy} className="cmd-ticker-run" aria-hidden={copy === 1 ? true : undefined}>

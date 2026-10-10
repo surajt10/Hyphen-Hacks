@@ -1,18 +1,3 @@
-// Builds public/data/bay-events.json: violent-crime and injury-crash events for Bay Area
-// places OUTSIDE San Francisco (SF lives in sf-events.json, built by build-data.mjs).
-// Same compact schema: one record per event, tagged with its H3 cell.
-//
-// Sources
-//   - Oakland PD "CrimeWatch Data" (data.oaklandca.gov, Socrata ppgh-7dqv), last 365 days.
-//     One row per charge; rows are grouped by case number, domestic cases are dropped, and
-//     each case keeps its most severe classification. Locations are block-level.
-//   - California Crash Reporting System (data.ca.gov CKAN package "ccrs"), injury/fatal
-//     crashes from the last 730 days in Alameda, Contra Costa, Marin, Napa, San Mateo,
-//     Santa Clara, Solano and Sonoma counties. Crash mode comes from the Parties table
-//     (datastore SQL join when indexed, otherwise the yearly CSV is streamed).
-//
-// Run from the northstar directory: node scripts/build-bay.mjs
-// Downloads go through curl because Node's fetch is unreliable in some sandboxes.
 import { latLngToCell } from "h3-js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
@@ -23,14 +8,9 @@ const OUT_DIR = new URL("../public/data/", import.meta.url);
 const now = new Date();
 const daysAgo = (n) => new Date(now.getTime() - n * 864e5).toISOString().slice(0, 19);
 
-// Bay Area bounding box; points outside it (or missing) are dropped.
 const BBOX = { minLng: -122.75, maxLng: -121.55, minLat: 37.15, maxLat: 38.35 };
-// Per-source caps (newest first) keep the file around 6 MB.
-// (~10k Oakland cases/yr; ~33k geocoded injury crashes per 2 yrs -> newest ~22 months kept.)
 const OAK_MAX = 15000;
 const CRASH_MAX = 30000;
-
-// ---------- helpers ----------
 
 function curl(url, timeout = 300) {
   let lastErr;
@@ -68,8 +48,6 @@ function inBox(lat, lng) {
   return lat >= BBOX.minLat && lat <= BBOX.maxLat && lng >= BBOX.minLng && lng <= BBOX.maxLng;
 }
 
-// Returns [lat, lng] rounded to 5 decimals, or null when missing / outside the Bay Area.
-// A positive longitude (sign typo, seen in a handful of crash reports) is flipped.
 function coords(lat, lng) {
   lat = +lat;
   lng = +lng;
@@ -93,16 +71,11 @@ function makeEvent(t, iso, x, ll, fatal) {
   };
 }
 
-// ---------- Oakland crime ----------
-
 const SEVERITY = ["shooting", "carjacking", "robbery", "agg_assault", "assault", "threat", "car_breakin"];
 
-// Crime types never used (non-violent, domestic, vice, etc.). Applies to the whole case.
 const OAK_SKIP_TYPE =
   /DOMESTIC|SEX|RAPE|PROSTITUTION|NARCOTIC|DUI|DRUNK|RUNAWAY|WARRANT|KIDNAP|TRAFFIC|EMBEZZLE|FORGERY|FRAUD|GAMBLING|LIQUOR|MISSING|CURFEW/;
-// Any charge like this marks the case as domestic / family violence: drop the whole case.
 const OAK_DOMESTIC = /DOMESTIC|SPOUSE|COHAB|DATE\/ETC|CHILD|ELDER|DEP(ENDENT)? AD|CUSTODY/;
-// Charges that never describe street violence on their own (police, phone, drugs, sex, etc.).
 const OAK_SKIP_CHARGE =
   /UNEXPLAINED DEATH|PEACE OFFICER|PUBLIC OFFICER|EXECUTIVE OFFICER|EMERGENCY (PERSONNEL|MED)|TELEPHONE|PHONE CALL|ELECTR|SEX|RAPE|SODOM|LEWD|INDECENT|NARCOTIC|CONTROLLED SUBSTANCE|MARIJUANA|OPIUM|COCAINE|PROSTITUT|PANDER|LODGE|TRESPASS|DUI|DRIV|UNLICENSED|FALSE REPORT|COURT ORDER|CONTEMPT|PROB(ATION)? VIOL|PAROLE|STALK|ANIMAL|DOG/;
 
@@ -144,9 +117,6 @@ function oakLabel(t, ct, d) {
   }
 }
 
-// "2300 HARRISON ST" -> "2300 Block Harrison St"; "14TH ST & CLAY ST" -> "14th St & Clay St".
-// The UI shows the text after the last ", " in `x` as "Near <place>", so the location is
-// always the final segment and never contains a comma itself.
 const noCommas = (s) => (s || "").replace(/\s*,\s*/g, " ").trim();
 
 function oakPlace(addr) {
@@ -202,10 +172,7 @@ function buildOakland() {
   return out.slice(0, OAK_MAX);
 }
 
-// ---------- Bay Area injury crashes (CCRS) ----------
-
 const CKAN = "https://data.ca.gov/api/3/action";
-// California county codes (SWITRS/CCRS numbering). San Francisco (38) is deliberately absent.
 const COUNTIES = { 1: "Alameda", 7: "Contra Costa", 21: "Marin", 28: "Napa", 41: "San Mateo", 43: "Santa Clara", 48: "Solano", 49: "Sonoma" };
 const MOTO_VEH = ["Motorcycle", "MotorDrivenCycleScooter15HpOrLess", "MotorizedBicycle"];
 const BIKE_VEH = ["Bicycle", "ElectricBicycles", "GoPedZipElectricScooterAndMotorboard"];
@@ -246,7 +213,6 @@ function parseCsvLine(line) {
   return out;
 }
 
-// Streams a (large) CCRS Parties CSV and keeps the ped/bike/moto parties of the given crashes.
 async function partiesFromCsv(url, ids, parties) {
   const child = spawn("curl", ["-sSL", "-m", "900", url], { stdio: ["ignore", "pipe", "inherit"] });
   const done = new Promise((res) => child.on("close", res));
@@ -260,7 +226,6 @@ async function partiesFromCsv(url, ids, parties) {
       if (idx.id < 0 || idx.pt < 0 || idx.vt < 0) throw new Error(`Unexpected parties header: ${h.join(",").slice(0, 200)}`);
       continue;
     }
-    // Cheap pre-filter on the collision id before parsing the full line.
     const f = idx.id === 1 ? line.slice(line.indexOf(",") + 1, line.indexOf(",", line.indexOf(",") + 1)) : null;
     if (f !== null && !ids.has(+f)) continue;
     const cols = parseCsvLine(line);
@@ -318,7 +283,6 @@ async function buildCrashes() {
       if (page.length < 10000) break;
     }
 
-    // Parties: pedestrians, cyclists, scooters, motorcycles for these crashes.
     const parties = new Map();
     const partiesRes = res(`Parties_${year}`);
     let partySource = "none";
@@ -342,7 +306,6 @@ async function buildCrashes() {
       console.warn(`ccrs ${year}: parties unavailable (${e.message}); using crash-level fields only`);
     }
 
-    // De-duplicate re-submitted reports (same report number + time): keep the latest version.
     const byReport = new Map();
     for (const r of rows) {
       const key = `${r.rn}|${r.dt}`;
@@ -356,7 +319,6 @@ async function buildCrashes() {
       if (!ll || !r.dt) continue;
       const fatal = +r.k > 0;
       const roads = [...new Set([cleanRoad(r.r1), cleanRoad(r.r2)].filter(Boolean))];
-      // Streets when the report has them; otherwise fall back to the city / county name.
       const city = r.city && r.city !== "Unincorporated" ? r.city : `${COUNTIES[r.cc] || ""} County`.trim();
       const place = roads.join(" & ") || noCommas(city);
       out.push(makeEvent(classifyCrash(r, parties.get(+r.id) || []), String(r.dt), `${fatal ? "Fatal" : "Injury"} crash, ${place}`, ll, fatal));
@@ -368,8 +330,6 @@ async function buildCrashes() {
   console.log("ccrs:", JSON.stringify(stats), `events ${out.length}`);
   return out.slice(0, CRASH_MAX);
 }
-
-// ---------- main ----------
 
 const events = [];
 const sources = [

@@ -39,7 +39,6 @@ import {
   CornerUpRight,
   ChartColumnBig,
   TrafficCone,
-  LayoutDashboard,
 } from "lucide-react";
 import { MODES, type Mode, type Ev, type LiveZone, scoreCells, liveCells, routeRisk, percentile, cellCenter, contribution, LIVE_SCORE } from "@/lib/scoring";
 import { DICTS, EVENT_LABEL, LANGS, type Lang, type Key } from "@/lib/i18n";
@@ -51,6 +50,7 @@ import { CAT, CAT_UI, CHIP_ORDER, MODE_ICON } from "./icons";
 import { addPoiIcons, MAP_POI, POI_OF_TAG } from "./mapIcons";
 import { corroborate, detectAnomalies, findConstellations, forecastNextHour, type Call } from "@/lib/intel";
 import Galaxy from "./Galaxy";
+import Logo from "./Logo";
 import Replay from "./Replay";
 import Command from "./Command";
 import { satellite } from "@/lib/sat";
@@ -65,14 +65,12 @@ type Scored = Route & { risk: number };
 type Avoided = { cell: string; score: number; events: Ev[]; live?: LiveZone };
 type Camera = { name: string; lng: number; lat: number; img: string };
 type Roads = { cameras: Camera[]; closures: { name: string; lng: number; lat: number; lng2: number; lat2: number; type: string }[] };
-// A live gunshot alert that affects this trip: near the destination or start, or on the way.
-type TripAlert = { zone: LiveZone; where: "dest" | "start" | "route"; mi: number; avoided: boolean; fastestHits: boolean };
+type TripAlert = { zone: LiveZone; where: "dest" | "start" | "route"; mi: number; avoided: boolean; fastestHits: boolean; saferEnters: boolean; fastestEnters: boolean };
 type Result = { safer: Scored; fastest: Scored; avoided: Avoided[]; passes: Avoided[]; timeline: { offset: number; risk: number }[]; cams: Camera[]; alert?: TripAlert };
 type ListId = "fav" | "want" | "saved";
 type ZoneInfo = { cell8: string; place: string; calls: number; crashes: number; topType: string; peak: string; last: string; rankPct: number; level: string; bestCell: string };
 type LayerState = { satellite: boolean; buildings: boolean; night: boolean; zones: boolean; traffic: boolean; skyline: boolean };
 
-// The Bay Area: SF has the richest data; nearby cities come from bay-events.json when present.
 const CITY = { center: [-122.4294, 37.7649] as [number, number], bbox: [-122.75, 37.15, -121.55, 38.35], data: ["/data/sf-events.json", "/data/bay-events.json"] };
 const STYLE: Record<Theme, string> = {
   light: "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
@@ -84,7 +82,6 @@ const PALETTE = {
 };
 const SOURCES = ["hex", "zones", "places", "routeAlt", "route", "avoid", "havens", "live", "liveLines", "sel", "selLinks", "selPts", "ends", "pin", "me", "constLines", "constPts", "forecast", "anomaly", "sensors", "trafficInc", "lights", "tri", "liveArea"];
 const OFFSETS = [0, 30, 60, 120, 180];
-// 3D: soft lit buildings (taller towers slightly tinted, like Google's 3D map), sky and haze.
 const H = ["coalesce", ["get", "render_height"], 12];
 const BLDG_3D = {
   light: ["interpolate", ["linear"], H, 0, "#f1f2f5", 30, "#e9ebf0", 90, "#dfe5ee", 180, "#cfdbec"],
@@ -102,8 +99,6 @@ const nightAt = (d: Date, sunsetIso?: string) => {
   return d.getHours() >= 19 || d.getHours() < 6;
 };
 const DARK_MODES: Mode[] = ["walk", "wheelchair", "bike", "scooter"];
-// Traffic worth an operator's attention: crashes, hazards, major queues and closures from the
-// last 2 h (long-running roadworks and all-day event closures would drown everything else).
 const notable = (i: TrafficIncident) => i.kind === "accident" || i.kind === "hazard" || (i.kind === "jam" && i.magnitude >= 3) || (i.full && !!i.since && Date.now() - i.since < 2 * 3600e3);
 const REPORT_CATS = ["incident", "hazard", "blocked", "ramp", "light"] as const;
 const LISTS: { id: ListId; label: string; icon: typeof Heart; color: string }[] = [
@@ -111,8 +106,8 @@ const LISTS: { id: ListId; label: string; icon: typeof Heart; color: string }[] 
   { id: "want", label: "Want to go", icon: Flag, color: "#188038" },
   { id: "saved", label: "Saved places", icon: Bookmark, color: "#1a73e8" },
 ];
-const MAX_EXCLUDE_M = 9000; // the public Valhalla server caps the total perimeter of avoid zones
-const M_PER_PX_Z0 = 123800; // metres per pixel at zoom 0 at SF's latitude
+const MAX_EXCLUDE_M = 9000;
+const M_PER_PX_Z0 = 123800;
 const FONT = ["Montserrat Medium", "Open Sans Bold", "Noto Sans Regular"];
 
 const km = (a: [number, number], b: [number, number]) => Math.hypot((a[0] - b[0]) * 88, (a[1] - b[1]) * 111);
@@ -146,15 +141,13 @@ const store = (k: string, v: unknown) => {
 };
 const samePlace = (a: Place, b: Place) => Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lng - b.lng) < 1e-5;
 
-// ---------- turn-by-turn helpers ----------
-const SIM_SPEEDUP = 8; // demo trips run 8x faster than real time
+const SIM_SPEEDUP = 8;
 const SPEED_MPS: Record<Mode, number> = { walk: 1.34, wheelchair: 1.0, bike: 4.4, scooter: 5, moped: 9, car: 9 };
 const cumDist = (coords: [number, number][]) => {
   const c = [0];
   for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + km(coords[i - 1], coords[i]) * 1000);
   return c;
 };
-// Distance in km from a point to a polyline (flat-earth approximation, fine at city scale).
 function distToLineKm(p: [number, number], line: [number, number][]) {
   let best = Infinity;
   for (let i = 1; i < line.length; i++) {
@@ -181,7 +174,6 @@ function makeNav(route: Scored, sim: boolean, prev?: Nav, avoided = 0): Nav {
 }
 
 export default function App() {
-  // ---------- preferences ----------
   const [theme, setTheme] = useState<Theme | null>(null);
   const [lang, setLang] = useState<Lang>("en");
   const t = useCallback((k: Key) => DICTS[lang][k], [lang]);
@@ -192,7 +184,6 @@ export default function App() {
   const [layers, setLayers] = useState<LayerState>({ satellite: false, buildings: false, night: false, zones: true, traffic: false, skyline: false });
   const [layersOpen, setLayersOpen] = useState(false);
 
-  // ---------- trip ----------
   const [view, setView] = useState<View>("nav");
   const [mode, setMode] = useState<Mode>("walk");
   const [offset, setOffset] = useState(0);
@@ -211,7 +202,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [showSteps, setShowSteps] = useState(false);
 
-  // ---------- places ----------
   const [panel, setPanel] = useState<"none" | "saved" | "recents" | "results">("none");
   const [category, setCategory] = useState<string | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
@@ -221,7 +211,6 @@ export default function App() {
   const [saved, setSaved] = useState<Record<ListId, Place[]>>({ fav: [], want: [], saved: [] });
   const [openList, setOpenList] = useState<ListId | null>(null);
 
-  // ---------- data + live ----------
   const [events, setEvents] = useState<Ev[]>([]);
   const [zones, setZones] = useState<LiveZone[]>([]);
   const [myPos, setMyPos] = useState<[number, number] | null>(null);
@@ -236,11 +225,11 @@ export default function App() {
   const [replayOn, setReplayOn] = useState(false);
   const [commandOn, setCommandOn] = useState(false);
 
-  // ---------- overlays ----------
   const [drawer, setDrawer] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
-  // Opened from a "join the sensor grid" link (/?listen=1): offer to start listening.
   const [joinPrompt, setJoinPrompt] = useState(false);
+  const [riskAsk, setRiskAsk] = useState<"pick" | "start" | null>(null);
+  const [riskOk, setRiskOk] = useState("");
   useEffect(() => {
     if (new URLSearchParams(location.search).get("listen") === "1") setJoinPrompt(true);
   }, []);
@@ -278,7 +267,6 @@ export default function App() {
   const placeClick = useRef<(p: Place) => void>(() => {});
   const placesCache = useRef(new Map<string, GeoJSON.Feature>());
 
-  // ---------- startup ----------
   useEffect(() => {
     device.current = load("ns-device", "") || Math.random().toString(36).slice(2, 10);
     store("ns-device", device.current);
@@ -309,7 +297,6 @@ export default function App() {
     };
   }, [addLog]);
 
-  // Live data sources (weather, daylight, BART, cameras...) every minute.
   useEffect(() => {
     let stop = false;
     const tick = async () => {
@@ -325,7 +312,6 @@ export default function App() {
     };
   }, []);
 
-  // Live traffic incidents (TomTom via our server) every 3 minutes.
   useEffect(() => {
     let stop = false;
     const tick = async () => {
@@ -355,7 +341,6 @@ export default function App() {
     layersRef.current = layers;
   }, [layers]);
 
-  // ---------- map ----------
   const setData = useCallback((id: string, data: GeoJSON.FeatureCollection) => {
     dataRef.current[id] = data;
     (mapRef.current?.getSource(id) as GeoJSONSource | undefined)?.setData(data);
@@ -377,8 +362,6 @@ export default function App() {
     set("traffic", L.traffic);
     set("traffic-inc", L.traffic);
     set("tri-ring", v === "nav" || v === "engine");
-    // 3D: real terrain (AWS elevation tiles), lit buildings, sky and haze. Works on the
-    // default map and on satellite imagery draped over the terrain.
     const th: Theme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
     try {
       map.setTerrain(L.buildings && map.getSource("dem") ? { source: "dem", exaggeration: 1.35 } : null);
@@ -394,18 +377,15 @@ export default function App() {
   const installLayers = useCallback(
     (map: MLMap, th: Theme) => {
       const P = PALETTE[th];
-      // Insert imagery above every basemap shape (roads, buildings) but under the labels after them.
       const baseLayers = map.getStyle().layers;
       const lastShape = baseLayers.reduce((i, l, k) => (["fill", "line", "fill-extrusion", "background"].includes(l.type) && !SOURCES.includes(l.id) ? k : i), 0);
       const firstSymbol = baseLayers.slice(lastShape + 1).find((l) => l.type === "symbol")?.id;
-      // Base extras that sit under the labels: satellite, NASA night lights, 3D buildings.
       if (!map.getSource("sat"))
         map.addSource("sat", { type: "raster", tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], tileSize: 256, maxzoom: 19, attribution: "Imagery © Esri, Maxar, Earthstar Geographics" });
       if (!map.getSource("night"))
         map.addSource("night", { type: "raster", tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png"], tileSize: 256, maxzoom: 8, attribution: "Night lights: NASA Black Marble" });
       if (!map.getLayer("sat")) map.addLayer({ id: "sat", type: "raster", source: "sat", layout: { visibility: "none" } }, firstSymbol);
       if (!map.getLayer("night")) map.addLayer({ id: "night", type: "raster", source: "night", layout: { visibility: "none" }, paint: { "raster-opacity": 0.75 } }, firstSymbol);
-      // Elevation (AWS Terrain Tiles, public): one copy drives 3D terrain, one the hill shading.
       const dem = { type: "raster-dem" as const, tiles: ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"], encoding: "terrarium" as const, tileSize: 256, maxzoom: 14, attribution: "Elevation: Mapzen / AWS Terrain Tiles" };
       if (!map.getSource("dem")) map.addSource("dem", dem);
       if (!map.getSource("dem-hs")) map.addSource("dem-hs", dem);
@@ -420,7 +400,6 @@ export default function App() {
           },
           firstSymbol,
         );
-      // Live traffic speeds (TomTom, proxied so the key stays on the server).
       if (!map.getSource("traffic"))
         map.addSource("traffic", { type: "raster", tiles: [`${location.origin}/api/traffic/tile?z={z}&x={x}&y={y}&style=${th === "dark" ? "relative0-dark" : "relative0"}`], tileSize: 256, minzoom: 6, maxzoom: 18, attribution: "Traffic © TomTom" });
       if (!map.getLayer("traffic")) map.addLayer({ id: "traffic", type: "raster", source: "traffic", minzoom: 6, layout: { visibility: "none" }, paint: { "raster-opacity": 0.95 } }, firstSymbol);
@@ -448,14 +427,13 @@ export default function App() {
       const add = (layer: Parameters<MLMap["addLayer"]>[0]) => !map.getLayer(layer.id) && map.addLayer(layer);
       add({ id: "hex", type: "fill", source: "hex", paint: { "fill-color": P.hex, "fill-opacity": ["*", 0.6, ["get", "s"]] } });
       add({ id: "hex-line", type: "line", source: "hex", paint: { "line-color": P.hex, "line-width": 0.5, "line-opacity": ["*", 0.8, ["get", "s"]] } });
-      // 3D risk skyline: every block's risk as a glowing column (optional, "How it works").
       add({
         id: "hex-3d",
         type: "fill-extrusion",
         source: "hex",
         layout: { visibility: "none" },
         paint: {
-          "fill-extrusion-color": th === "dark" ? ["interpolate", ["linear"], ["get", "s"], 0, "#1b2a44", 0.5, "#2f5fa8", 0.8, "#5b9cff", 1, "#d6e6ff"] : ["interpolate", ["linear"], ["get", "s"], 0, "#d6e4fb", 0.5, "#7aa7ec", 0.8, "#2f6fd6", 1, "#0b3d91"],
+          "fill-extrusion-color": ["interpolate", ["linear"], ["get", "s"], 0, "#2fa84f", 0.4, "#9ccc3a", 0.6, "#f2c230", 0.78, "#f08a24", 0.92, "#e5484d", 1, "#c81e1e"],
           "fill-extrusion-height": ["*", ["^", ["get", "s"], 2.2], 1500],
           "fill-extrusion-base": 0,
           "fill-extrusion-opacity": 0.9,
@@ -485,7 +463,6 @@ export default function App() {
         layout: { "text-field": ["to-string", ["get", "n"]], "text-font": FONT, "text-size": 12, "text-allow-overlap": false },
         paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.5 },
       });
-      // Google-style place icons, shown when zoomed in (no search needed).
       addPoiIcons(map);
       add({
         id: "places",
@@ -507,7 +484,6 @@ export default function App() {
         },
         paint: { "text-color": ["get", "color"], "text-halo-color": P.halo, "text-halo-width": 1.6 },
       });
-      // "How it works" intelligence layers.
       add({ id: "forecast", type: "fill", source: "forecast", paint: { "fill-color": "#f29900", "fill-opacity": ["*", 0.55, ["get", "s"]] } });
       add({ id: "forecast-line", type: "line", source: "forecast", paint: { "line-color": "#f29900", "line-width": 1.2, "line-opacity": 0.8 } });
       add({ id: "sensors", type: "line", source: "sensors", paint: { "line-color": "#2fbf71", "line-width": 2, "line-dasharray": [1, 1] } });
@@ -517,7 +493,6 @@ export default function App() {
       add({ id: "const-lines", type: "line", source: "constLines", layout: { "line-cap": "round" }, paint: { "line-color": th === "light" ? "#b06d00" : "#ffd27a", "line-width": ["case", ["get", "on"], 2.4, 1.2], "line-opacity": ["case", ["get", "on"], 1, 0.6] } });
       add({ id: "const-pts", type: "circle", source: "constPts", paint: { "circle-radius": ["case", ["get", "on"], 5.5, 3.5], "circle-color": th === "light" ? "#b06d00" : "#fff6dc", "circle-stroke-color": th === "light" ? "#fff" : "#ffd27a", "circle-stroke-width": 1.5, "circle-blur": th === "light" ? 0 : 0.15 } });
       add({ id: "avoid", type: "line", source: "avoid", paint: { "line-color": P.sel, "line-width": 1.5, "line-dasharray": [2, 2], "line-opacity": 0.8 } });
-      // The area routes stay out of around each live gunshot alert (under the route lines).
       add({ id: "live-area", type: "fill", source: "liveArea", paint: { "fill-color": "#d93025", "fill-opacity": 0.1 } });
       add({ id: "live-area-line", type: "line", source: "liveArea", paint: { "line-color": "#d93025", "line-width": 1.5, "line-opacity": 0.7, "line-dasharray": [3, 2] } });
       add({ id: "route-alt-casing", type: "line", source: "routeAlt", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": P.altCasing, "line-width": 9 } });
@@ -542,10 +517,8 @@ export default function App() {
       add({ id: "sel-line", type: "line", source: "sel", paint: { "line-color": P.sel, "line-width": 2.5 } });
       add({ id: "sel-links", type: "line", source: "selLinks", paint: { "line-color": P.sel, "line-width": 1, "line-opacity": 0.6, "line-dasharray": [1, 1.5] } });
       add({ id: "sel-pts", type: "circle", source: "selPts", paint: { "circle-radius": 4.5, "circle-color": ["match", ["get", "k"], "crash", "#f29900", "#d93025"], "circle-stroke-color": th === "light" ? "#fff" : "#0e1012", "circle-stroke-width": 1.5 } });
-      // Streetlights reported out (SF 311) and live traffic incidents (TomTom).
       add({ id: "lights", type: "symbol", source: "lights", minzoom: 13.5, layout: { "icon-image": "alert-light", "icon-size": ["interpolate", ["linear"], ["zoom"], 13.5, 0.42, 17, 0.6], "icon-allow-overlap": true } });
       add({ id: "traffic-inc", type: "symbol", source: "trafficInc", minzoom: 9, layout: { visibility: "none", "icon-image": ["concat", "ti-", ["get", "kind"]], "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.38, 13, 0.52, 16, 0.62], "icon-allow-overlap": false, "symbol-sort-key": ["-", 0, ["get", "rank"]] } });
-      // Acoustic triangulation: estimated origin of a bang heard by 2+ phones, with its error circle.
       add({ id: "tri-ring", type: "circle", source: "tri", paint: { "circle-radius": metersToPx("r") as never, "circle-color": "#d93025", "circle-opacity": 0.14, "circle-stroke-color": "#d93025", "circle-stroke-width": 2, "circle-pitch-alignment": "map" } });
       add({ id: "tri-pt", type: "circle", source: "tri", paint: { "circle-radius": 5, "circle-color": "#d93025", "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
       add({ id: "me-halo", type: "circle", source: "me", paint: { "circle-radius": 18, "circle-color": P.me, "circle-opacity": 0.16 } });
@@ -567,7 +540,6 @@ export default function App() {
     [applyVisibility],
   );
 
-  // Create the map once the theme is known.
   useEffect(() => {
     if (!theme || mapRef.current) return;
     let cancelled = false;
@@ -608,7 +580,6 @@ export default function App() {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
       }
-      // Danger zones light up on hover.
       let hovered: number | string | undefined;
       map.on("mousemove", "zones", (e) => {
         const f = e.features?.[0];
@@ -627,7 +598,6 @@ export default function App() {
     };
   }, [theme, installLayers]);
 
-  // Theme switch: swap the basemap, then put our layers back on top.
   const styleTheme = useRef<Theme | null>(null);
   useEffect(() => {
     const map = mapRef.current;
@@ -651,32 +621,29 @@ export default function App() {
     }
   }, [view, layers, mapReady, applyVisibility, setData]);
 
-  // 3D: tilt the camera when buildings are on.
   const was3d = useRef(false);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady || was3d.current === layers.buildings) return;
     was3d.current = layers.buildings;
     map.easeTo(layers.buildings ? { pitch: 63, bearing: -24, zoom: Math.max(map.getZoom(), 15.4), duration: 1400 } : { pitch: 0, bearing: 0, duration: 800 });
-    // Then a slow orbit, like a 3D flyover (any drag or zoom stops it).
     if (layers.buildings && !navRef.current)
       map.once("moveend", () => {
         if (layersRef.current.buildings && !navRef.current) map.rotateTo(map.getBearing() + 40, { duration: 14000, easing: (x) => x });
       });
   }, [layers.buildings, mapReady]);
 
-  // Risk skyline: tilt the camera so the columns read as a skyline.
   const wasSky = useRef(false);
   useEffect(() => {
     const map = mapRef.current;
     const on = layers.skyline && view === "engine";
     if (!map || !mapReady || wasSky.current === on) return;
     wasSky.current = on;
-    if (on) map.easeTo({ center: [-122.427, 37.752], pitch: 58, bearing: -24, zoom: 12.1, duration: 1600 });
+    const offset: [number, number] = window.innerWidth > 760 ? [-Math.min(500, window.innerWidth * 0.44) / 2, 0] : [0, -window.innerHeight * 0.26];
+    if (on) map.easeTo({ center: [-122.418, 37.768], offset, pitch: 58, bearing: -24, zoom: 12.1, duration: 1600 });
     else if (!layers.buildings) map.easeTo({ pitch: 0, bearing: 0, duration: 800 });
   }, [layers.skyline, layers.buildings, view, mapReady]);
 
-  // Car and moped trips: show live traffic, like a driving app.
   useEffect(() => {
     if (mode === "car" || mode === "moped") setLayers((l) => (l.traffic ? l : { ...l, traffic: true }));
   }, [mode]);
@@ -692,9 +659,7 @@ export default function App() {
     setData("lights", fc((sources?.lights ?? []).map((l) => pt([l.lng, l.lat], { addr: l.addr, kind: l.kind, since: l.since }))));
   }, [sources, mapReady, setData]);
 
-  // ---------- risk ----------
   const when = useMemo(() => new Date(Date.now() + offset * 60_000), [offset]);
-  // After sunset, open 311 streetlight outages count as risk for people on foot, wheels or bikes.
   const darkEvents = useMemo<Ev[]>(() => {
     if (!DARK_MODES.includes(mode) || !nightAt(when, sources?.weather?.sunset)) return [];
     const d = new Date().toISOString().slice(0, 10);
@@ -713,7 +678,6 @@ export default function App() {
     return parents;
   }, [cells]);
 
-  // Danger zones for people: proportional circles over ~0.3 sq mi areas, with incident counts.
   useEffect(() => {
     if (!mapReady) return;
     const cut = percentile([...parentScores.values()], 0.72);
@@ -770,7 +734,6 @@ export default function App() {
     [cells, parentScores],
   );
 
-  // ---------- geolocation ----------
   useEffect(() => {
     if (!navigator.geolocation) return;
     const id = navigator.geolocation.watchPosition(
@@ -794,17 +757,13 @@ export default function App() {
     if (start && !fromIsMe) f.push(pt([start.lng, start.lat], { k: "from" }));
     if (to) f.push(pt([to.lng, to.lat], { k: "to" }));
     setData("ends", fc(f));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startKey, fromIsMe, to, mapReady, setData]);
 
   useEffect(() => {
     if (mapReady) setData("pin", fc(pin ? [pt([pin.lng, pin.lat])] : []));
   }, [pin, mapReady, setData]);
 
-  // ---------- live layer: poll every 1.5 s ----------
   const seen = useRef(new Set<string>());
-  // Clock sync with the server (NTP-style): offset from the poll with the shortest round trip
-  // among the last 30, so phones agree on time to within a few ms for triangulation.
   const clock = useRef<{ offset: number; rtt: number; samples: { offset: number; rtt: number }[] }>({ offset: 0, rtt: Infinity, samples: [] });
   useEffect(() => {
     let stop = false;
@@ -844,7 +803,6 @@ export default function App() {
     }
     if (!mapReady) return;
     setData("live", fc(zones.map((z) => pt([z.lng, z.lat], { kind: z.kind, level: z.level, id: z.id, category: z.category ?? "", count: z.count, ids: ((z as { reportIds?: string[] }).reportIds ?? []).join(",") }))));
-    // Triangulated bangs: spokes from each (coarsened) phone area to the estimated origin.
     setData(
       "liveLines",
       fc(zones.filter((z) => (z.points?.length ?? 0) > 1).flatMap((z) => (z.origin ? z.points!.map((p) => line([p, z.origin!])) : [line(z.points!)]))),
@@ -858,7 +816,6 @@ export default function App() {
     if (mapReady) setData("havens", fc(havensOn ? havens.map((h) => pt([h.lng, h.lat], { name: h.label })) : []));
   }, [havens, havensOn, mapReady, setData]);
 
-  // ---------- recents + saved ----------
   const remember = useCallback((p: Place) => {
     setRecents((r) => {
       const next = [{ p, t: Date.now() }, ...r.filter((x) => !samePlace(x.p, p))].slice(0, 20);
@@ -876,7 +833,6 @@ export default function App() {
     });
   const isSaved = (list: ListId, p: Place) => saved[list].some((x) => samePlace(x, p));
 
-  // ---------- search ----------
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const search = (field: "search" | "from" | "to", q: string) => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -948,7 +904,6 @@ export default function App() {
     [meInCity, myPos, center, fit, addLog],
   );
 
-  // Place markers with category icons.
   useEffect(() => {
     const map = mapRef.current, ml = mlRef.current;
     for (const { m, root } of markers.current) {
@@ -989,8 +944,6 @@ export default function App() {
   };
   const [navWhy, setNavWhy] = useState(false);
 
-  // Base-map places near the map center (restaurants, cafes, hotels, museums...), loaded as you
-  // pan and zoom in, like Google Maps' place icons.
   const placesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const placesKey = useRef("");
   placesLoad.current = () => {
@@ -1097,7 +1050,6 @@ export default function App() {
     r.start();
   };
 
-  // ---------- routing ----------
   const isNight = useCallback(
     (d: Date) => nightAt(d, sources?.weather?.sunset),
     [sources],
@@ -1129,7 +1081,6 @@ export default function App() {
         let fastRoutes = await fetchRoutes(mode, a, b, night);
         addLog(`Router returned ${fastRoutes.length} candidate${fastRoutes.length > 1 ? "s" : ""} in ${Math.round(performance.now() - T0)} ms`, "route");
 
-        // Roads closed right now (TomTom live incidents + Caltrans): car and moped routes skip them.
         const closureBoxes: [number, number][][] = [];
         let roads: Roads | null = null;
         if (mode === "car" || mode === "moped") {
@@ -1148,7 +1099,6 @@ export default function App() {
             closureBoxes.push(box(Math.min(c.lng, c.lng2) - d, Math.min(c.lat, c.lat2) - d, Math.max(c.lng, c.lng2) + d, Math.max(c.lat, c.lat2) + d));
           }
           addLog(`Live traffic: ${closed.length} road closures in the Bay Area, ${hits.length} on this trip's candidate routes avoided · Caltrans: ${roads?.cameras.length ?? 0} cameras, ${full.length} full closures`, "data");
-          // Keep only legal candidates; if every one used a closed road, ask again without them.
           if (hits.length) {
             const legal = fastRoutes.filter((r) => !hits.some((i) => touches(r, i)));
             const detour = legal.length ? [] : await fetchRoutes(mode, a, b, night, closureBoxes, 1).catch(() => []);
@@ -1158,8 +1108,6 @@ export default function App() {
         const closurePerim = closureBoxes.reduce((sum, r) => sum + ringPerimeterM(r), 0);
         const fastest = fastRoutes[0];
 
-        // Avoid zones: high-risk cells near the trip and every live alert, merged into
-        // polygons, highest risk first, until the router's size limit is reached.
         const pad = 0.012;
         const [minX, maxX] = [Math.min(a.lng, b.lng) - pad, Math.max(a.lng, b.lng) + pad];
         const [minY, maxY] = [Math.min(a.lat, b.lat) - pad, Math.max(a.lat, b.lat) + pad];
@@ -1193,9 +1141,6 @@ export default function App() {
         const scored: Scored[] = [...fastRoutes, ...safeRoutes].map((r) => ({ ...r, risk: routeRisk(r.coords, r.minutes, cells, live).risk }));
         const fastScored = scored[0];
         const limit = fastScored.minutes * 1.4 + 3;
-        // Live gunshot areas are hard constraints: if any candidate stays out of them, only those
-        // are considered, however much longer they are. (Cells around the start and destination
-        // can't be avoided and don't count.)
         const soundCells = new Set([...live].filter(([, z]) => z.kind === "sound").map(([c]) => c));
         const liveOn = (r: Route) => [...routeRisk(r.coords, r.minutes, new Map(), new Map()).cellsOnRoute.keys()].filter((c) => soundCells.has(c) && !protect.has(c)).length;
         const fastestHits = soundCells.size > 0 && liveOn(fastScored) > 0;
@@ -1204,18 +1149,19 @@ export default function App() {
         const safer = pool.reduce((best, r) => (r.risk + 4 * r.minutes < best.risk + 4 * best.minutes ? r : best), pool[0] ?? fastScored);
         addLog(`Scored ${scored.length} routes (minutes / risk): ${scored.map((r) => `${Math.round(r.minutes)}/${Math.round(r.risk)}`).join(", ")}`, "route");
         if (fastestHits) addLog(clean.length ? `Live gunshot area on the fastest way · routed around it (+${Math.max(0, Math.round(safer.minutes - fastScored.minutes))} min)` : "Live gunshot area on every candidate route · no way around found", "live");
-        // The alert to tell the traveller about: closest to the destination, then the start, then on the way.
         const miTo = (z: LiveZone, p: Place) => miles([z.lng, z.lat], [p.lng, p.lat]);
         const sounds = zones.filter((z) => z.kind === "sound");
         const nearDest = sounds.filter((z) => miTo(z, b) < 0.3).sort((x, y) => miTo(x, b) - miTo(y, b))[0];
         const nearStart = sounds.filter((z) => miTo(z, a) < 0.3).sort((x, y) => miTo(x, a) - miTo(y, a))[0];
         const onWay = fastestHits ? sounds.find((z) => [...live].some(([c, lz]) => lz.id === z.id && routeRisk(fastScored.coords, 1, new Map(), new Map()).cellsOnRoute.has(c))) : undefined;
+        const enters = (r: Route) => [...routeRisk(r.coords, r.minutes, new Map(), new Map()).cellsOnRoute.keys()].some((c) => soundCells.has(c));
+        const base = { avoided: liveOn(safer) === 0, fastestHits, saferEnters: enters(safer), fastestEnters: enters(fastScored) };
         const alert: TripAlert | undefined = nearDest
-          ? { zone: nearDest, where: "dest", mi: miTo(nearDest, b), avoided: liveOn(safer) === 0, fastestHits }
+          ? { zone: nearDest, where: "dest", mi: miTo(nearDest, b), ...base }
           : nearStart
-            ? { zone: nearStart, where: "start", mi: miTo(nearStart, a), avoided: liveOn(safer) === 0, fastestHits }
+            ? { zone: nearStart, where: "start", mi: miTo(nearStart, a), ...base }
             : onWay
-              ? { zone: onWay, where: "route", mi: 0, avoided: liveOn(safer) === 0, fastestHits }
+              ? { zone: onWay, where: "route", mi: 0, ...base }
               : undefined;
 
         const onSafe = routeRisk(safer.coords, safer.minutes, cells, live).cellsOnRoute;
@@ -1223,7 +1169,6 @@ export default function App() {
           .filter((c) => !onSafe.has(c) && ((cells.get(c)?.score ?? 0) >= threshold * 0.6 || live.has(c)))
           .map((c) => ({ cell: c, score: (cells.get(c)?.score ?? 0) + (live.has(c) ? 999 : 0), events: cells.get(c)?.events ?? [], live: live.get(c) }))
           .sort((p, q) => q.score - p.score)
-          // One entry per live alert (an alert's area spans several cells).
           .filter((x, i, all) => !x.live || all.findIndex((y) => y.live?.id === x.live!.id) === i)
           .slice(0, 5);
         const timeline = OFFSETS.map((o) => {
@@ -1237,7 +1182,6 @@ export default function App() {
           .sort((p, q) => p.dist - q.dist)
           .slice(0, 4);
 
-        // Riskiest blocks the chosen route still passes (shown when there is nothing to avoid).
         const passes: Avoided[] = [...onSafe.keys()]
           .filter((c) => (cells.get(c)?.score ?? 0) > 0)
           .map((c) => ({ cell: c, score: cells.get(c)!.score, events: cells.get(c)!.events, live: live.get(c) }))
@@ -1245,7 +1189,6 @@ export default function App() {
           .slice(0, 3);
         setResult({ safer, fastest: fastScored, avoided, passes, timeline, cams, alert });
         setPick("safer");
-        // Mid-trip: swap the new route in and keep navigating.
         if (navRef.current && !navRef.current.arrived) {
           const prev = navRef.current;
           setNav(makeNav(safer, prev.sim, prev, avoided.length));
@@ -1267,11 +1210,9 @@ export default function App() {
         if (id === computeId.current) setBusy(false);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [startKey, to, events, mode, when, cells, live, zones, threshold, t, setData, addLog, fit, fromIsMe, isNight, traffic],
   );
 
-  // Route automatically whenever start, destination, mode or departure time change.
   const lastQuiet = useRef(false);
   useEffect(() => {
     if (!start || !to || !events.length) return;
@@ -1279,7 +1220,6 @@ export default function App() {
     lastQuiet.current = true;
     const id = setTimeout(() => compute({ quiet }), 120);
     return () => clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startKey, to, mode, offset, events.length]);
   useEffect(() => {
     lastQuiet.current = false;
@@ -1292,7 +1232,6 @@ export default function App() {
   useEffect(() => {
     if (!mapReady) return;
     if (nav) {
-      // Navigating: only the road ahead.
       setData("route", fc([line(nav.route.coords.slice(Math.max(0, nav.idx - 1)))]));
       setData("routeAlt", fc([]));
       return;
@@ -1309,7 +1248,6 @@ export default function App() {
     setData("routeAlt", fc(alt ? [line(alt.coords, { alt: pick === "safer" ? "fastest" : "safer" })] : []));
   }, [result, pick, nav, mapReady, setData]);
 
-  // ---------- turn-by-turn navigation ----------
   const startNav = () => {
     if (!result) return;
     const same = result.safer === result.fastest;
@@ -1320,6 +1258,31 @@ export default function App() {
     setPoi(null);
     setZoneCard(null);
     addLog(`Navigation started · ${mode} · ${Math.round(route.minutes)} min${n.sim ? " · simulated trip (no GPS)" : " · following GPS"}`, "route");
+  };
+  const routeKey = (r: Route) => `${r.coords.length}:${r.minutes.toFixed(2)}`;
+  const enters = (which: "safer" | "fastest") => !!result?.alert && (which === "fastest" ? result.alert.fastestEnters : result.alert.saferEnters);
+  const choose = (which: "safer" | "fastest") => {
+    if (which === "fastest" && result && enters("fastest") && !enters("safer") && riskOk !== routeKey(result.fastest)) return setRiskAsk("pick");
+    setPick(which);
+  };
+  const tryStart = () => {
+    if (!result) return;
+    const which = pick === "fastest" && result.safer !== result.fastest ? "fastest" : "safer";
+    if (enters(which) && riskOk !== routeKey(result[which])) return setRiskAsk("start");
+    startNav();
+  };
+  const acceptRisk = () => {
+    if (!result) return;
+    const action = riskAsk;
+    setRiskAsk(null);
+    if (action === "pick") {
+      setRiskOk(routeKey(result.fastest));
+      setPick("fastest");
+    } else {
+      const which = pick === "fastest" && result.safer !== result.fastest ? "fastest" : "safer";
+      setRiskOk(routeKey(result[which]));
+      startNav();
+    }
   };
   const exitNav = () => {
     setNav(null);
@@ -1337,7 +1300,6 @@ export default function App() {
     [compute],
   );
 
-  // Simulated trip (laptops, demos): move along the route at the mode's speed, sped up.
   useEffect(() => {
     if (!nav?.sim || nav.arrived) return;
     const id = setInterval(() => {
@@ -1353,7 +1315,6 @@ export default function App() {
     return () => clearInterval(id);
   }, [nav?.sim, nav?.arrived, nav?.route, mode]);
 
-  // Real GPS: follow the phone, detect arrival, and reroute if you leave the route.
   useEffect(() => {
     const n = navRef.current;
     if (!n || n.sim || n.arrived || !myPos) return;
@@ -1370,7 +1331,6 @@ export default function App() {
     setNav({ ...n, idx: best, pos: myPos, arrived, rerouting: false });
   }, [myPos, rerouteFrom]);
 
-  // Camera follows you, pointing the way you're heading.
   useEffect(() => {
     if (!nav || nav.arrived) return;
     const ahead = nav.route.coords[Math.min(nav.idx + 4, nav.route.coords.length - 1)];
@@ -1383,14 +1343,11 @@ export default function App() {
       padding: window.innerWidth > 760 ? { top: 140, bottom: 140, left: 0, right: 0 } : { top: 150, bottom: 170, left: 0, right: 0 },
     });
     if (mapReady) setData("me", fc([pt(nav.pos)]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav?.pos, nav?.arrived]);
   useEffect(() => {
     if (nav?.arrived) addLog(`Arrived · ${nav.reroutes} live reroute${nav.reroutes === 1 ? "" : "s"} · ${nav.avoided} higher-risk spots avoided`, "route");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav?.arrived]);
 
-  // A new live alert near the route: reroute (from where you are, if navigating).
   const zoneSig = zones.filter((z) => LIVE_SCORE[z.kind][z.level] > 0).map((z) => `${z.id}:${z.level}`).join("|");
   const lastSig = useRef("");
   useEffect(() => {
@@ -1407,10 +1364,8 @@ export default function App() {
     setToast(t("rerouted"));
     if (n && !n.arrived) rerouteFrom(n.pos, "REROUTE: live alert ahead on the route");
     else compute({ quiet: true, reason: "REROUTE: live alert within 2 cells of the route" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoneSig]);
 
-  // ---------- engine selection ----------
   const selectCell = useCallback(
     (c: string | null, fly = false) => {
       setSelectedCell(c);
@@ -1438,10 +1393,8 @@ export default function App() {
   );
   useEffect(() => {
     if (selectedCell) selectCell(selectedCell);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, offset]);
 
-  // ---------- map clicks ----------
   clickRef.current = (e: MapMouseEvent) => {
     const map = mapRef.current;
     if (!map) return;
@@ -1452,8 +1405,8 @@ export default function App() {
     }
     const hits = map.queryRenderedFeatures(e.point, { layers: ["places", "live", "route-alt", "zones"].filter((l) => map.getLayer(l)) });
     const hit = hits.find((h) => h.layer.id !== "zones") ?? hits[0];
-    if (hit?.layer.id === "places") return; // handled by the place-icon click
-    if (hit?.layer.id === "route-alt") return setPick(hit.properties.alt);
+    if (hit?.layer.id === "places") return;
+    if (hit?.layer.id === "route-alt") return choose(hit.properties.alt);
     if (hit?.layer.id === "live" && hit.properties.kind === "report") return setReportCard({ ids: String(hit.properties.ids).split(","), category: hit.properties.category, count: hit.properties.count });
     setReportCard(null);
     setPoi(null);
@@ -1471,7 +1424,6 @@ export default function App() {
     setTimeout(() => selectCell(z.bestCell, true), 60);
   };
 
-  // ---------- sound alerts ----------
   const here = useCallback((): [number, number] => {
     if (meInCity) return myPos!;
     if (start) return [start.lng, start.lat];
@@ -1484,7 +1436,6 @@ export default function App() {
       const [lng, lat] = at ?? here();
       navigator.vibrate?.([300, 100, 300]);
       addLog(`Microphone: ${d.label} detected on this phone (confidence ${(d.confidence * 100).toFixed(0)}%) · audio stays on device`, "live");
-      // Arrival time on the server's clock lets 2+ phones triangulate where the bang came from.
       const onset = d.onset !== undefined ? d.onset + clock.current.offset : undefined;
       if (onset !== undefined) addLog(`Sound onset timed to the millisecond · clock synced to server (round trip ${Math.round(clock.current.rtt)} ms)`, "live");
       const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sound", lat, lng, device: device.current, confidence: d.confidence, at: onset, demoOrigin: demo ? [lng, lat] : undefined }) }).then((r) => r.json());
@@ -1511,7 +1462,6 @@ export default function App() {
       ?.request("screen")
       .then((l) => (lock = l))
       .catch(() => {});
-    // Join the acoustic sensor grid: check in every 20 s (the server only keeps area counts).
     const beat = (off = false) => {
       const [lng, lat] = here();
       fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "listen", lat, lng, device: device.current, off }) }).catch(() => {});
@@ -1526,7 +1476,6 @@ export default function App() {
     };
   }, [listenOn, onDetect, here]);
 
-  // ---------- situational awareness (events and places only, never people) ----------
   const calls24: Call[] = useMemo(() => sources?.calls24 ?? [], [sources]);
   const constellations = useMemo(() => findConstellations(events), [events]);
   const forecast = useMemo(() => forecastNextHour(events, mode), [events, mode]);
@@ -1588,7 +1537,6 @@ export default function App() {
     setDrawer(false);
     const n = navRef.current;
     if (n && !n.arrived) {
-      // Mid-trip: the bang happens on the road ahead of you.
       const c = n.route.coords;
       return onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c[Math.min(c.length - 1, n.idx + Math.max(8, Math.floor((c.length - n.idx) * 0.35)))], true);
     }
@@ -1596,10 +1544,8 @@ export default function App() {
     onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c ? c[Math.floor(c.length * 0.55)] : undefined, true);
   };
 
-  // Command center: a full-screen ops view over the live map (dark, with live traffic).
   const beforeCommand = useRef<{ theme: Theme; traffic: boolean; skyline: boolean } | null>(null);
   const notableTraffic = useMemo(() => traffic.filter(notable), [traffic]);
-  // The command center's panels frame a map window; aim the camera at the middle of it.
   const commandPadding = () =>
     window.innerWidth >= 1100 ? { top: 150, bottom: 140, left: 350, right: 370 } : { top: 70, bottom: Math.round(window.innerHeight * 0.55), left: 0, right: 0 };
   const openCommand = () => {
@@ -1609,7 +1555,6 @@ export default function App() {
     setView("engine");
     setLayers((l) => ({ ...l, traffic: true, skyline: false }));
     if (theme !== "dark") setTheme("dark");
-    // After this render's camera effects (e.g. the skyline tilting back), frame the city.
     setTimeout(() => mapRef.current?.flyTo({ center: [-122.432, 37.765], zoom: 12.3, pitch: 0, bearing: 0, padding: commandPadding(), duration: 1200 }), 80);
     addLog("Command center opened · live feeds, cameras, sensors and anomalies in one view", "data");
   };
@@ -1623,7 +1568,6 @@ export default function App() {
     }
   };
 
-  // Splash screen: stars while the map and data load (at least ~1.4 s).
   useEffect(() => {
     if (!bootAt.current) bootAt.current = performance.now();
     if (!events.length || !mapReady) return;
@@ -1636,7 +1580,6 @@ export default function App() {
     };
   }, [events.length, mapReady]);
 
-  // ---------- reports ----------
   const sendReport = async (cat: string) => {
     const [lng, lat] = here();
     const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "report", category: cat, lat, lng, device: device.current }) }).then((r) => r.json());
@@ -1651,7 +1594,6 @@ export default function App() {
     setReportCard(null);
   };
 
-  // ---------- safe places (optional) ----------
   useEffect(() => {
     if (!havensOn || havens.length) return;
     nearbyByTags(["amenity:hospital", "amenity:police", "amenity:fire_station", "amenity:pharmacy"], CITY.center[1], CITY.center[0], 50, 9)
@@ -1665,12 +1607,32 @@ export default function App() {
     return () => clearTimeout(id);
   }, [toast]);
 
+  const requestPosition = (then: (pos: [number, number]) => void) => {
+    if (!navigator.geolocation) return setToast("Location isn't available on this device.");
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        const pos: [number, number] = [p.coords.longitude, p.coords.latitude];
+        setMyPos(pos);
+        if (!inCity(pos)) return setToast("You're outside the Bay Area, so NorthStar can't route from there yet.");
+        then(pos);
+      },
+      () => setToast("Allow location access to use where you are."),
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 10_000 },
+    );
+  };
+  const startFromMe = () => {
+    setSuggest(null);
+    requestPosition(() => {
+      setFromIsMe(true);
+      setFrom(null);
+      setFromText("");
+    });
+  };
   const locate = () => {
     if (meInCity) mapRef.current?.flyTo({ center: myPos!, zoom: 15.5 });
-    else setToast(t("locationOff"));
+    else requestPosition((pos) => mapRef.current?.flyTo({ center: pos, zoom: 15.5 }));
   };
 
-  // ---------- render ----------
   const r = result;
   const same = !!r && r.safer === r.fastest;
   const pctLess = r && r.fastest.risk > 0 ? Math.max(0, Math.round((1 - r.safer.risk / r.fastest.risk) * 100)) : 0;
@@ -1704,7 +1666,6 @@ export default function App() {
     <div className={`app ${largeText ? "large" : ""} ${contrast ? "contrast" : ""} view-${view} ${showDir || showSide ? "panel-open" : ""} ${nav ? "navigating" : ""} ${commandOn ? "commanding" : ""}`} lang={lang}>
       <div ref={mapDiv} className="map" role="application" aria-label={view === "engine" ? "Map. Click a spot to inspect its risk." : "Map. Click to drop a pin."} />
 
-      {/* ----- left rail (desktop) ----- */}
       {view === "nav" && (
         <nav className="rail" aria-label="Main">
           <button className="rail-btn" onClick={() => setDrawer(true)} aria-label={t("menu")}>
@@ -1732,7 +1693,6 @@ export default function App() {
         </nav>
       )}
 
-      {/* ----- top bar ----- */}
       <div className="topbar">
         {view === "nav" && !showDir && (
           <div className="searchwrap">
@@ -1837,7 +1797,7 @@ export default function App() {
               <Menu size={20} />
             </button>
             <span className="brand">
-              <ShieldCheck size={18} /> NorthStar
+              <Logo size={22} /> NorthStar
             </span>
           </div>
         )}
@@ -1885,7 +1845,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* ----- side panel: saved / recents / place results ----- */}
       {showSide && (
         <section className="side" aria-label={panel}>
           {panel === "results" && (
@@ -2002,7 +1961,6 @@ export default function App() {
         </section>
       )}
 
-      {/* ----- directions panel ----- */}
       {showDir && (
         <section className="dir" aria-label={t("directions")}>
           <div className="dir-top">
@@ -2034,7 +1992,11 @@ export default function App() {
                   placeholder={t("chooseStart")}
                   value={fromIsMe ? (meInCity ? t("yourLocation") : "") : fromText}
                   className={fromIsMe && meInCity ? "me" : ""}
-                  onFocus={(e) => fromIsMe && e.currentTarget.select()}
+                  onFocus={(e) => {
+                    if (fromIsMe) e.currentTarget.select();
+                    if (!fromText) setSuggest({ field: "from", items: [] });
+                  }}
+                  onBlur={() => setTimeout(() => setSuggest((x) => (x?.field === "from" && !x.items.length ? null : x)), 200)}
                   onChange={(e) => {
                     setFromIsMe(false);
                     setFrom(null);
@@ -2047,11 +2009,9 @@ export default function App() {
                     items={suggest.items}
                     onPick={setStart}
                     extra={
-                      meInCity ? (
-                        <button role="option" aria-selected={false} onClick={() => { setFromIsMe(true); setSuggest(null); }}>
-                          <LocateFixed size={16} /> {t("yourLocation")}
-                        </button>
-                      ) : null
+                      <button role="option" aria-selected={false} className="sg-me" onMouseDown={(e) => e.preventDefault()} onClick={startFromMe}>
+                        <LocateFixed size={16} /> {t("yourLocation")}
+                      </button>
                     }
                   />
                 )}
@@ -2130,7 +2090,7 @@ export default function App() {
                   {!same && (
                     <RouteOption
                       on={pick === "fastest"}
-                      onClick={() => setPick("fastest")}
+                      onClick={() => choose("fastest")}
                       minutes={r.fastest.minutes}
                       mi={r.fastest.mi}
                       title={t("fastestRoute")}
@@ -2141,7 +2101,7 @@ export default function App() {
                 </div>
 
                 <div className="start-row">
-                  <button className="btn primary start" onClick={startNav}>
+                  <button className="btn primary start" onClick={tryStart}>
                     <Navigation size={17} /> Start
                   </button>
                   <span className="fine">
@@ -2173,7 +2133,6 @@ export default function App() {
                     <div className="cams">
                       {r.cams.map((c) => (
                         <figure key={c.img}>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={`${c.img}?t=${Math.floor(Date.now() / 60000)}`} alt={`Caltrans camera: ${c.name}`} loading="lazy" />
                           <figcaption>{c.name.replace(/^TV\d+ -- /, "")}</figcaption>
                         </figure>
@@ -2207,7 +2166,6 @@ export default function App() {
         </section>
       )}
 
-      {/* ----- engine ----- */}
       {view === "engine" && (
         <Engine
           events={events}
@@ -2259,7 +2217,6 @@ export default function App() {
         />
       )}
 
-      {/* ----- floating controls ----- */}
       <div className="fab-col">
         {view === "nav" && (
           <button className="fab card" onClick={() => setReportOpen(true)} aria-label={t("report")} title={t("report")}>
@@ -2271,7 +2228,6 @@ export default function App() {
         </button>
       </div>
 
-      {/* ----- layers ----- */}
       <div className="layers">
         <button className={`layers-btn card ${layers.satellite ? "sat" : ""}`} onClick={() => setLayersOpen((o) => !o)} aria-expanded={layersOpen} aria-label="Layers">
           <Layers size={18} />
@@ -2331,6 +2287,31 @@ export default function App() {
           <Ear size={14} /> {t("listening")}
         </div>
       )}
+      {riskAsk && result?.alert && (
+        <div className="risk-ask" role="alertdialog" aria-modal="true" aria-labelledby="risk-title" onClick={(e) => e.target === e.currentTarget && setRiskAsk(null)}>
+          <div className="risk-card card">
+            <h2 id="risk-title">{riskAsk === "pick" ? "This route goes through a gunshot alert" : "Your route enters a gunshot alert area"}</h2>
+            <p>
+              {result.alert.zone.level === "confirmed" ? "A confirmed gunshot" : "A possible gunshot"} was reported{" "}
+              {result.alert.where === "route" ? "on this way" : `${fmtDist(result.alert.mi)} from your ${result.alert.where === "dest" ? "destination" : "start"}`} {fmtAgo(result.alert.zone.ts)}. NorthStar keeps you out of this area unless you choose to go.
+            </p>
+            <div className="risk-actions">
+              {riskAsk === "pick" ? (
+                <button className="btn primary" onClick={() => { setRiskAsk(null); setPick("safer"); }} autoFocus>
+                  Keep the safer route
+                </button>
+              ) : (
+                <button className="btn primary" onClick={() => setRiskAsk(null)} autoFocus>
+                  Cancel
+                </button>
+              )}
+              <button className="btn risk-go" onClick={acceptRisk}>
+                {riskAsk === "pick" ? "Use this route anyway" : "Start anyway"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {joinPrompt && !listenOn && (
         <div className="join card" role="dialog" aria-labelledby="join-title">
           <h2 id="join-title">Join the sensor grid</h2>
@@ -2351,7 +2332,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ----- bottom cards ----- */}
       {card === "poi" && poi && (
         <div className="placecard card" role="dialog" aria-label={poi.label}>
           <div className="pc-head">
@@ -2369,7 +2349,6 @@ export default function App() {
                 <span className="fine">{[poi.cat ? CAT[poi.cat]?.label.replace(/s$/, "") : "", poi.addr, meInCity ? fmtDist(miles(myPos!, [poi.lng, poi.lat])) : poi.dist !== undefined ? fmtDist(poi.dist) : ""].filter(Boolean).join(" · ")}</span>
                 {poi.hours && <span className="fine">Hours: {poi.hours}</span>}
                 {(() => {
-                  // Warn before anyone heads toward a live gunshot alert.
                   const z = zones
                     .filter((x) => x.kind === "sound")
                     .map((x) => ({ x, mi: miles([x.lng, x.lat], [poi.lng, poi.lat]) }))
@@ -2494,13 +2473,12 @@ export default function App() {
         </div>
       )}
 
-      {/* ----- menu drawer ----- */}
       {drawer && (
         <div className="scrim" onClick={() => setDrawer(false)}>
           <nav className="drawer" onClick={(e) => e.stopPropagation()} aria-label={t("menu")}>
             <div className="drawer-head">
               <span className="brand">
-                <ShieldCheck size={20} /> NorthStar
+                <Logo size={24} /> NorthStar
               </span>
               <button className="icon-btn" onClick={() => setDrawer(false)} aria-label={t("close")}>
                 <X size={20} />
@@ -2594,7 +2572,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ----- turn-by-turn ----- */}
       {nav && navInfo && !nav.arrived && (
         <>
           <div className="nav-banner" role="status" aria-live="polite">
@@ -2645,7 +2622,7 @@ export default function App() {
             <Galaxy density={1.2} glowIntensity={0.45} saturation={0.3} hueShift={210} twinkleIntensity={0.6} rotationSpeed={0.06} mouseRepulsion={false} transparent={false} />
           </div>
           <div className="arrival-card">
-            <ShieldCheck size={40} />
+            <Logo size={52} className="logo-lg" />
             <h2 id="arrival-title">You&apos;ve arrived safely</h2>
             <p>{to?.label}</p>
             <div className="arrival-stats">
@@ -2682,7 +2659,7 @@ export default function App() {
             <Galaxy density={1.1} glowIntensity={0.4} saturation={0.25} hueShift={215} twinkleIntensity={0.5} rotationSpeed={0.05} mouseRepulsion={false} transparent={false} />
           </div>
           <div className="splash-brand">
-            <ShieldCheck size={44} />
+            <Logo size={64} className="logo-lg" />
             <h1>NorthStar</h1>
             <p>{t("tagline")}</p>
             <span className="splash-load">Loading SF safety data…</span>
@@ -2748,8 +2725,6 @@ function RouteOption(p: { on: boolean; onClick: () => void; minutes: number; mi:
   );
 }
 
-// One avoided spot: a satellite snapshot with each incident circled, what happened there,
-// and when. Crashes are amber, violence is red.
 function WhyItem({ a, lang, t, tag }: { a: Avoided; lang: Lang; t: (k: Key) => string; tag?: string }) {
   const [lng, lat] = cellCenter(a.cell);
   const sat = satellite(lng, lat, 0.0026, 132, 99);
@@ -2761,7 +2736,6 @@ function WhyItem({ a, lang, t, tag }: { a: Avoided; lang: Lang; t: (k: Key) => s
     return (
       <span className="why-item">
         <span className="why-sat">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={sat.url} alt="" loading="lazy" />
           <svg viewBox={`0 0 ${sat.W} ${sat.H}`} aria-hidden>
             <circle cx={lp[0]} cy={lp[1]} r={14} className="ws-live" />
@@ -2788,7 +2762,6 @@ function WhyItem({ a, lang, t, tag }: { a: Avoided; lang: Lang; t: (k: Key) => s
   return (
     <span className="why-item">
       <span className="why-sat">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={sat.url} alt={`Satellite view near ${place ?? "this block"}`} loading="lazy" />
         <svg viewBox={`0 0 ${sat.W} ${sat.H}`} aria-hidden>
           <polygon points={hex} className="ws-hex" />
@@ -2820,8 +2793,6 @@ function WhyItem({ a, lang, t, tag }: { a: Avoided; lang: Lang; t: (k: Key) => s
   );
 }
 
-// "Why this route": always shown. Avoided spots when the safer route detours; otherwise the
-// riskiest blocks the route still passes, so people always see what the route weighed.
 function WhySection({ r, pctLess, lang, t, onFocus, compact }: { r: Result; pctLess: number; lang: Lang; t: (k: Key) => string; onFocus: (cell: string) => void; compact?: boolean }) {
   const avoided = r.avoided.length > 0;
   const list = avoided ? r.avoided : r.passes;

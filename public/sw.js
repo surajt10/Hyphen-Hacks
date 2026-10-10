@@ -1,5 +1,3 @@
-// NorthStar offline support: keeps the app, the risk data and map tiles you've
-// already seen available with no signal. New routes still need a connection.
 const CACHE = "northstar-v1";
 const SHELL = ["/", "/data/sf-events.json", "/manifest.webmanifest", "/maplibre/maplibre-gl-worker.mjs", "/maplibre/maplibre-gl-shared.mjs"];
 
@@ -12,11 +10,10 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  if (url.pathname.startsWith("/api/")) return; // live data is never cached
+  if (url.pathname.startsWith("/api/")) return;
   const isTile = url.hostname.includes("cartocdn.com");
   const isStatic = url.origin === location.origin && (url.pathname.startsWith("/_next/static") || url.pathname.startsWith("/data/") || url.pathname.startsWith("/maplibre/"));
   if (isTile || isStatic) {
-    // Cache first, fill the cache as you browse.
     e.respondWith(
       caches.match(req).then(
         (hit) =>
@@ -29,7 +26,6 @@ self.addEventListener("fetch", (e) => {
       ),
     );
   } else if (req.mode === "navigate") {
-    // Network first for the page, cached copy when offline.
     e.respondWith(
       fetch(req)
         .then((res) => {
