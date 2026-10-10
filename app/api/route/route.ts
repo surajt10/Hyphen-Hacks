@@ -62,8 +62,8 @@ type Trip = {
 const toRoute = (trip: Trip) => ({
   coords: trip.legs.flatMap((l) => decode(l.shape)),
   minutes: trip.summary.time / 60,
-  km: trip.summary.length,
-  steps: trip.legs.flatMap((l) => l.maneuvers.map((m) => ({ text: m.instruction, km: m.length }))),
+  mi: trip.summary.length,
+  steps: trip.legs.flatMap((l) => l.maneuvers.map((m) => ({ text: m.instruction, mi: m.length }))),
 });
 
 async function valhalla(body: Body, exclude?: [number, number][][]) {
@@ -75,7 +75,7 @@ async function valhalla(body: Body, exclude?: [number, number][][]) {
     ],
     costing: c,
     costing_options: options,
-    units: "kilometers",
+    units: "miles",
     alternates: body.alternates ?? 0,
     ...(exclude?.length ? { exclude_polygons: exclude } : {}),
   };

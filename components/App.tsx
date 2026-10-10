@@ -1,49 +1,62 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Map as MLMap, GeoJSONSource, MapMouseEvent, LngLatLike } from "maplibre-gl";
-import { cellToBoundary, cellToLatLng, cellToParent, cellsToMultiPolygon, gridDisk, latLngToCell } from "h3-js";
+import { createRoot, type Root } from "react-dom/client";
+import type { Map as MLMap, GeoJSONSource, MapMouseEvent, LngLatLike, Marker } from "maplibre-gl";
+import { cellToBoundary, cellToChildren, cellToLatLng, cellToParent, cellsToMultiPolygon, gridDisk, latLngToCell } from "h3-js";
 import {
   ArrowUpDown,
+  Bookmark,
+  Building2,
+  CarFront,
   ChevronDown,
   ChevronRight,
   Clock,
   Cpu,
   Flag,
+  Heart,
+  History,
+  Layers,
   LocateFixed,
+  Map as MapIcon,
   MapPin,
   Menu,
   Mic,
   Moon,
+  MoonStar,
   Navigation,
+  Radio,
+  Satellite,
   Search,
   ShieldCheck,
+  Siren,
   Sun,
+  Trash2,
   X,
   Camera,
   Ear,
+  CircleDot,
 } from "lucide-react";
 import { MODES, type Mode, type Ev, type LiveZone, scoreCells, liveCells, routeRisk, percentile, cellCenter, contribution, LIVE_SCORE } from "@/lib/scoring";
 import { DICTS, EVENT_LABEL, LANGS, type Lang, type Key } from "@/lib/i18n";
 import { SoundWatcher, type Detection } from "@/lib/sound";
-import Engine, { type LogEntry } from "./Engine";
-import { MODE_ICON } from "./icons";
+import { categoryFor, nearbyByTags, searchCategory } from "@/lib/places";
+import { fmtAgo, fmtDate, fmtDist, fmtHour, peakWindow, placeOf } from "@/lib/format";
+import Engine, { type LogEntry, type Sources } from "./Engine";
+import { CAT, CAT_UI, MODE_ICON } from "./icons";
 
 type Theme = "light" | "dark";
 type View = "nav" | "engine";
-type Place = { label: string; lng: number; lat: number };
-type Route = { coords: [number, number][]; minutes: number; km: number; steps: { text: string; km: number }[] };
+type Place = { label: string; lng: number; lat: number; cat?: string; addr?: string; hours?: string; dist?: number };
+type Route = { coords: [number, number][]; minutes: number; mi: number; steps: { text: string; mi: number }[] };
 type Scored = Route & { risk: number };
 type Avoided = { cell: string; score: number; events: Ev[]; live?: LiveZone };
 type Camera = { name: string; lng: number; lat: number; img: string };
 type Roads = { cameras: Camera[]; closures: { name: string; lng: number; lat: number; lng2: number; lat2: number; type: string }[] };
-type Result = {
-  safer: Scored;
-  fastest: Scored;
-  avoided: Avoided[];
-  timeline: { offset: number; risk: number }[];
-  cams: Camera[];
-};
+type Result = { safer: Scored; fastest: Scored; avoided: Avoided[]; timeline: { offset: number; risk: number }[]; cams: Camera[] };
+type ListId = "fav" | "want" | "saved";
+type ZoneInfo = { cell8: string; place: string; calls: number; crashes: number; topType: string; peak: string; last: string; rankPct: number; level: string; bestCell: string };
+type LayerState = { satellite: boolean; buildings: boolean; night: boolean; zones: boolean };
 
 const CITY = { center: [-122.4294, 37.7649] as [number, number], bbox: [-122.52, 37.7, -122.35, 37.83], data: "/data/sf-events.json" };
 const STYLE: Record<Theme, string> = {
@@ -51,16 +64,23 @@ const STYLE: Record<Theme, string> = {
   dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
 };
 const PALETTE = {
-  light: { route: "#1a73e8", casing: "#1557b0", alt: "#aecbfa", altCasing: "#7ba3e8", zoneStroke: "#2f3bd6", zoneFill: "#8b90ee", zoneOpacity: 0.32, hex: "#1a56db", sel: "#202124", end: "#ea4335", me: "#1a73e8" },
-  dark: { route: "#3d8bff", casing: "#0b3d91", alt: "#4d5b73", altCasing: "#2a3343", zoneStroke: "#7c96ff", zoneFill: "#5b78ff", zoneOpacity: 0.2, hex: "#007afc", sel: "#ffffff", end: "#ff5a4e", me: "#3d8bff" },
+  light: { route: "#1a73e8", casing: "#1557b0", alt: "#aecbfa", altCasing: "#7ba3e8", zoneLo: "#b9bdf7", zoneHi: "#4f46e5", strokeLo: "#6870e8", strokeHi: "#2e2bb8", hex: "#1a56db", sel: "#202124", end: "#ea4335", me: "#1a73e8", bldg: "#d9dce3", label: "#2e2bb8", halo: "#ffffff" },
+  dark: { route: "#3d8bff", casing: "#0b3d91", alt: "#4d5b73", altCasing: "#2a3343", zoneLo: "#3b4aa8", zoneHi: "#7c8dff", strokeLo: "#5b6fd6", strokeHi: "#a5b4ff", hex: "#007afc", sel: "#ffffff", end: "#ff5a4e", me: "#3d8bff", bldg: "#2a2f38", label: "#ffffff", halo: "#0e1012" },
 };
 const SOURCES = ["hex", "zones", "routeAlt", "route", "avoid", "havens", "live", "liveLines", "sel", "selLinks", "selPts", "ends", "pin", "me"];
 const OFFSETS = [0, 30, 60, 120, 180];
 const REPORT_CATS = ["incident", "hazard", "blocked", "ramp", "light"] as const;
+const LISTS: { id: ListId; label: string; icon: typeof Heart; color: string }[] = [
+  { id: "fav", label: "Favorites", icon: Heart, color: "#d93025" },
+  { id: "want", label: "Want to go", icon: Flag, color: "#188038" },
+  { id: "saved", label: "Saved places", icon: Bookmark, color: "#1a73e8" },
+];
 const MAX_EXCLUDE_M = 9000; // the public Valhalla server caps the total perimeter of avoid zones
 const M_PER_PX_Z0 = 123800; // metres per pixel at zoom 0 at SF's latitude
+const FONT = ["Montserrat Medium", "Open Sans Bold", "Noto Sans Regular"];
 
 const km = (a: [number, number], b: [number, number]) => Math.hypot((a[0] - b[0]) * 88, (a[1] - b[1]) * 111);
+const miles = (a: [number, number], b: [number, number]) => km(a, b) * 0.621371;
 const inCity = (p: [number, number] | null) => !!p && p[0] > CITY.bbox[0] && p[0] < CITY.bbox[2] && p[1] > CITY.bbox[1] && p[1] < CITY.bbox[3];
 const fc = (features: unknown[]) => ({ type: "FeatureCollection", features }) as GeoJSON.FeatureCollection;
 const pt = (c: [number, number], props: Record<string, unknown> = {}) => ({ type: "Feature", properties: props, geometry: { type: "Point", coordinates: c } });
@@ -76,19 +96,19 @@ function ringPerimeterM(ring: number[][]) {
   return m;
 }
 const metersToPx = (prop: string) => ["interpolate", ["exponential", 2], ["zoom"], 0, ["/", ["get", prop], M_PER_PX_Z0], 22, ["/", ["*", ["get", prop], 4194304], M_PER_PX_Z0]];
-
-function deviceId() {
+const load = <T,>(k: string, d: T): T => {
   try {
-    let id = localStorage.getItem("ns-device");
-    if (!id) {
-      id = Math.random().toString(36).slice(2, 10);
-      localStorage.setItem("ns-device", id);
-    }
-    return id;
+    return JSON.parse(localStorage.getItem(k) ?? "null") ?? d;
   } catch {
-    return Math.random().toString(36).slice(2, 10);
+    return d;
   }
-}
+};
+const store = (k: string, v: unknown) => {
+  try {
+    localStorage.setItem(k, JSON.stringify(v));
+  } catch {}
+};
+const samePlace = (a: Place, b: Place) => Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lng - b.lng) < 1e-5;
 
 export default function App() {
   // ---------- preferences ----------
@@ -99,6 +119,8 @@ export default function App() {
   const [contrast, setContrast] = useState(false);
   const [havensOn, setHavensOn] = useState(false);
   const [listenOn, setListenOn] = useState(false);
+  const [layers, setLayers] = useState<LayerState>({ satellite: false, buildings: false, night: false, zones: true });
+  const [layersOpen, setLayersOpen] = useState(false);
 
   // ---------- trip ----------
   const [view, setView] = useState<View>("nav");
@@ -109,6 +131,7 @@ export default function App() {
   const [to, setTo] = useState<Place | null>(null);
   const [dirOpen, setDirOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [searchFocus, setSearchFocus] = useState(false);
   const [fromText, setFromText] = useState("");
   const [toText, setToText] = useState("");
   const [suggest, setSuggest] = useState<{ field: "search" | "from" | "to"; items: Place[] } | null>(null);
@@ -118,6 +141,16 @@ export default function App() {
   const [error, setError] = useState("");
   const [showSteps, setShowSteps] = useState(false);
 
+  // ---------- places ----------
+  const [panel, setPanel] = useState<"none" | "saved" | "recents" | "results">("none");
+  const [category, setCategory] = useState<string | null>(null);
+  const [places, setPlaces] = useState<Place[]>([]);
+  const [placesBusy, setPlacesBusy] = useState(false);
+  const [poi, setPoi] = useState<Place | null>(null);
+  const [recents, setRecents] = useState<{ p: Place; t: number }[]>([]);
+  const [saved, setSaved] = useState<Record<ListId, Place[]>>({ fav: [], want: [], saved: [] });
+  const [openList, setOpenList] = useState<ListId | null>(null);
+
   // ---------- data + live ----------
   const [events, setEvents] = useState<Ev[]>([]);
   const [zones, setZones] = useState<LiveZone[]>([]);
@@ -125,12 +158,15 @@ export default function App() {
   const [havens, setHavens] = useState<Place[]>([]);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
+  const [sources, setSources] = useState<Sources | null>(null);
+  const [center, setCenter] = useState<[number, number]>(CITY.center);
 
   // ---------- overlays ----------
   const [drawer, setDrawer] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [alert, setAlert] = useState<{ id: string; d: Detection } | null>(null);
   const [pin, setPin] = useState<Place | null>(null);
+  const [zoneCard, setZoneCard] = useState<ZoneInfo | null>(null);
   const [reportCard, setReportCard] = useState<{ ids: string[]; category: string; count: number } | null>(null);
   const [toast, setToast] = useState("");
   const [announce, setAnnounce] = useState("");
@@ -138,23 +174,30 @@ export default function App() {
   const [mapReady, setMapReady] = useState(false);
 
   const mapRef = useRef<MLMap | null>(null);
+  const mlRef = useRef<typeof import("maplibre-gl") | null>(null);
   const mapDiv = useRef<HTMLDivElement>(null);
   const dataRef = useRef<Record<string, GeoJSON.FeatureCollection>>({});
   const watcher = useRef<SoundWatcher | null>(null);
   const device = useRef("");
   const viewRef = useRef<View>("nav");
+  const layersRef = useRef(layers);
   const clickRef = useRef<(e: MapMouseEvent) => void>(() => {});
+  const markers = useRef<{ m: Marker; root: Root }[]>([]);
 
   const addLog = useCallback((text: string, kind?: LogEntry["kind"]) => setLog((l) => [{ t: Date.now(), text, kind }, ...l].slice(0, 120)), []);
 
   // ---------- startup ----------
   useEffect(() => {
-    device.current = deviceId();
-    let saved: Theme | null = null;
+    device.current = load("ns-device", "") || Math.random().toString(36).slice(2, 10);
+    store("ns-device", device.current);
+    setRecents(load("ns-recents", []));
+    setSaved(load("ns-saved", { fav: [], want: [], saved: [] }));
+    let savedTheme: Theme | null = null;
     try {
-      saved = localStorage.getItem("ns-theme") as Theme | null;
+      const raw = (localStorage.getItem("ns-theme") ?? "").replace(/[^a-z]/g, "");
+      savedTheme = raw === "light" || raw === "dark" ? raw : null;
     } catch {}
-    setTheme(saved ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+    setTheme(savedTheme ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
     const t0 = performance.now();
     fetch(CITY.data)
       .then((r) => r.json())
@@ -174,6 +217,22 @@ export default function App() {
     };
   }, [addLog]);
 
+  // Live data sources (weather, daylight, BART, cameras...) every minute.
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      try {
+        const j = await fetch("/api/sources").then((r) => r.json());
+        if (!stop) setSources(j);
+      } catch {}
+      if (!stop) setTimeout(tick, 60_000);
+    };
+    tick();
+    return () => {
+      stop = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!theme) return;
     document.documentElement.dataset.theme = theme;
@@ -181,10 +240,12 @@ export default function App() {
       localStorage.setItem("ns-theme", theme);
     } catch {}
   }, [theme]);
-
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
 
   // ---------- map ----------
   const setData = useCallback((id: string, data: GeoJSON.FeatureCollection) => {
@@ -192,33 +253,76 @@ export default function App() {
     (mapRef.current?.getSource(id) as GeoJSONSource | undefined)?.setData(data);
   }, []);
 
-  const applyVisibility = useCallback((map: MLMap, v: View) => {
+  const applyVisibility = useCallback((map: MLMap, v: View, L: LayerState) => {
     const set = (id: string, on: boolean) => map.getLayer(id) && map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
     set("hex", v === "engine");
     set("hex-line", v === "engine");
     set("avoid", v === "engine");
-    set("zones", v === "nav");
+    for (const id of ["zones-halo", "zones", "zones-count"]) set(id, v === "nav" && L.zones);
+    set("sat", L.satellite);
+    set("night", L.night);
+    set("bldg-3d", L.buildings);
   }, []);
 
   const installLayers = useCallback(
     (map: MLMap, th: Theme) => {
       const P = PALETTE[th];
-      for (const id of SOURCES) if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: dataRef.current[id] ?? fc([]) });
+      // Insert imagery above every basemap shape (roads, buildings) but under the labels after them.
+      const baseLayers = map.getStyle().layers;
+      const lastShape = baseLayers.reduce((i, l, k) => (["fill", "line", "fill-extrusion", "background"].includes(l.type) && !SOURCES.includes(l.id) ? k : i), 0);
+      const firstSymbol = baseLayers.slice(lastShape + 1).find((l) => l.type === "symbol")?.id;
+      // Base extras that sit under the labels: satellite, NASA night lights, 3D buildings.
+      if (!map.getSource("sat"))
+        map.addSource("sat", { type: "raster", tiles: ["https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"], tileSize: 256, maxzoom: 16, attribution: "Imagery: USGS The National Map" });
+      if (!map.getSource("night"))
+        map.addSource("night", { type: "raster", tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png"], tileSize: 256, maxzoom: 8, attribution: "Night lights: NASA Black Marble" });
+      if (!map.getLayer("sat")) map.addLayer({ id: "sat", type: "raster", source: "sat", layout: { visibility: "none" } }, firstSymbol);
+      if (!map.getLayer("night")) map.addLayer({ id: "night", type: "raster", source: "night", layout: { visibility: "none" }, paint: { "raster-opacity": 0.75 } }, firstSymbol);
+      if (!map.getLayer("bldg-3d") && map.getSource("carto"))
+        map.addLayer(
+          {
+            id: "bldg-3d",
+            type: "fill-extrusion",
+            source: "carto",
+            "source-layer": "building",
+            minzoom: 13,
+            layout: { visibility: "none" },
+            paint: {
+              "fill-extrusion-color": P.bldg,
+              "fill-extrusion-height": ["coalesce", ["get", "render_height"], 12],
+              "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+              "fill-extrusion-opacity": 0.85,
+            },
+          },
+          firstSymbol,
+        );
+
+      for (const id of SOURCES) if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: dataRef.current[id] ?? fc([]), generateId: id === "zones" });
       const add = (layer: Parameters<MLMap["addLayer"]>[0]) => !map.getLayer(layer.id) && map.addLayer(layer);
       add({ id: "hex", type: "fill", source: "hex", paint: { "fill-color": P.hex, "fill-opacity": ["*", 0.6, ["get", "s"]] } });
       add({ id: "hex-line", type: "line", source: "hex", paint: { "line-color": P.hex, "line-width": 0.5, "line-opacity": ["*", 0.8, ["get", "s"]] } });
+      const hover = ["boolean", ["feature-state", "hover"], false];
+      add({ id: "zones-halo", type: "circle", source: "zones", paint: { "circle-radius": metersToPx("mh") as never, "circle-color": ["interpolate", ["linear"], ["get", "s"], 0, P.zoneLo, 1, P.zoneHi], "circle-opacity": ["case", hover as never, 0.22, 0.1], "circle-blur": 0.6, "circle-pitch-alignment": "map" } });
       add({
         id: "zones",
         type: "circle",
         source: "zones",
         paint: {
           "circle-radius": metersToPx("m") as never,
-          "circle-color": P.zoneFill,
-          "circle-opacity": P.zoneOpacity,
-          "circle-stroke-color": P.zoneStroke,
-          "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 11, 1.2, 15, 2.5],
+          "circle-color": ["interpolate", ["linear"], ["get", "s"], 0, P.zoneLo, 1, P.zoneHi],
+          "circle-opacity": ["case", hover as never, 0.55, ["interpolate", ["linear"], ["get", "s"], 0, 0.22, 1, 0.42]] as never,
+          "circle-stroke-color": ["interpolate", ["linear"], ["get", "s"], 0, P.strokeLo, 1, P.strokeHi],
+          "circle-stroke-width": ["case", hover as never, 3.5, ["interpolate", ["linear"], ["get", "s"], 0, 1.2, 1, 2.6]] as never,
           "circle-pitch-alignment": "map",
         },
+      });
+      add({
+        id: "zones-count",
+        type: "symbol",
+        source: "zones",
+        minzoom: 13.2,
+        layout: { "text-field": ["to-string", ["get", "n"]], "text-font": FONT, "text-size": 12, "text-allow-overlap": false },
+        paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.5 },
       });
       add({ id: "avoid", type: "line", source: "avoid", paint: { "line-color": P.sel, "line-width": 1.5, "line-dasharray": [2, 2], "line-opacity": 0.8 } });
       add({ id: "route-alt-casing", type: "line", source: "routeAlt", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": P.altCasing, "line-width": 9 } });
@@ -242,17 +346,7 @@ export default function App() {
       add({ id: "sel-fill", type: "fill", source: "sel", paint: { "fill-color": P.sel, "fill-opacity": 0.12 } });
       add({ id: "sel-line", type: "line", source: "sel", paint: { "line-color": P.sel, "line-width": 2.5 } });
       add({ id: "sel-links", type: "line", source: "selLinks", paint: { "line-color": P.sel, "line-width": 1, "line-opacity": 0.6, "line-dasharray": [1, 1.5] } });
-      add({
-        id: "sel-pts",
-        type: "circle",
-        source: "selPts",
-        paint: {
-          "circle-radius": 4.5,
-          "circle-color": ["match", ["get", "k"], "crash", "#f29900", "#d93025"],
-          "circle-stroke-color": th === "light" ? "#fff" : "#0e1012",
-          "circle-stroke-width": 1.5,
-        },
-      });
+      add({ id: "sel-pts", type: "circle", source: "selPts", paint: { "circle-radius": 4.5, "circle-color": ["match", ["get", "k"], "crash", "#f29900", "#d93025"], "circle-stroke-color": th === "light" ? "#fff" : "#0e1012", "circle-stroke-width": 1.5 } });
       add({ id: "me-halo", type: "circle", source: "me", paint: { "circle-radius": 18, "circle-color": P.me, "circle-opacity": 0.16 } });
       add({ id: "me", type: "circle", source: "me", paint: { "circle-radius": 7, "circle-color": P.me, "circle-stroke-color": "#fff", "circle-stroke-width": 2.5 } });
       add({
@@ -267,7 +361,7 @@ export default function App() {
         },
       });
       add({ id: "pin", type: "circle", source: "pin", paint: { "circle-radius": 8, "circle-color": P.end, "circle-stroke-color": "#fff", "circle-stroke-width": 2.5 } });
-      applyVisibility(map, viewRef.current);
+      applyVisibility(map, viewRef.current, layersRef.current);
     },
     [applyVisibility],
   );
@@ -279,25 +373,37 @@ export default function App() {
     (async () => {
       const maplibre = await import("maplibre-gl");
       maplibre.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
+      mlRef.current = maplibre;
       if (cancelled || !mapDiv.current) return;
-      const map = new maplibre.Map({
-        container: mapDiv.current,
-        style: STYLE[theme],
-        center: CITY.center as LngLatLike,
-        zoom: 12.4,
-        attributionControl: { compact: true },
-      });
-      map.addControl(new maplibre.NavigationControl({ showCompass: false }), "bottom-right");
+      const map = new maplibre.Map({ container: mapDiv.current, style: STYLE[theme], center: CITY.center as LngLatLike, zoom: 12.4, attributionControl: { compact: true }, maxPitch: 70 });
+      map.addControl(new maplibre.NavigationControl({ showCompass: true, visualizePitch: true }), "bottom-right");
       mapRef.current = map;
       map.on("style.load", () => {
         installLayers(map, (document.documentElement.dataset.theme as Theme) ?? "light");
         setMapReady(true);
       });
       map.on("click", (e) => clickRef.current(e));
-      for (const id of ["route-alt", "live"]) {
+      map.on("moveend", () => {
+        const c = map.getCenter();
+        setCenter([c.lng, c.lat]);
+      });
+      for (const id of ["route-alt", "live", "zones"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
       }
+      // Danger zones light up on hover.
+      let hovered: number | string | undefined;
+      map.on("mousemove", "zones", (e) => {
+        const f = e.features?.[0];
+        if (f?.id === undefined || f.id === hovered) return;
+        if (hovered !== undefined) map.setFeatureState({ source: "zones", id: hovered }, { hover: false });
+        hovered = f.id;
+        map.setFeatureState({ source: "zones", id: hovered }, { hover: true });
+      });
+      map.on("mouseleave", "zones", () => {
+        if (hovered !== undefined) map.setFeatureState({ source: "zones", id: hovered }, { hover: false });
+        hovered = undefined;
+      });
     })();
     return () => {
       cancelled = true;
@@ -321,44 +427,92 @@ export default function App() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
-    applyVisibility(map, view);
+    applyVisibility(map, view, layers);
     if (view === "nav") {
       setSelectedCell(null);
-      setData("sel", fc([]));
-      setData("selLinks", fc([]));
-      setData("selPts", fc([]));
+      for (const id of ["sel", "selLinks", "selPts"]) setData(id, fc([]));
     }
-  }, [view, mapReady, applyVisibility, setData]);
+  }, [view, layers, mapReady, applyVisibility, setData]);
+
+  // 3D: tilt the camera when buildings are on.
+  const was3d = useRef(false);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || was3d.current === layers.buildings) return;
+    was3d.current = layers.buildings;
+    map.easeTo(layers.buildings ? { pitch: 58, bearing: -18, zoom: Math.max(map.getZoom(), 15), duration: 900 } : { pitch: 0, bearing: 0, duration: 700 });
+  }, [layers.buildings, mapReady]);
 
   // ---------- risk ----------
   const when = useMemo(() => new Date(Date.now() + offset * 60_000), [offset]);
   const cells = useMemo(() => scoreCells(events, mode, when), [events, mode, when]);
   const live = useMemo(() => liveCells(zones), [zones]);
   const threshold = useMemo(() => percentile([...cells.values()].map((c) => c.score), 0.9), [cells]);
-
-  // Danger zones for people: proportional circles over ~0.7 km² areas.
-  useEffect(() => {
-    if (!mapReady) return;
+  const parentScores = useMemo(() => {
     const parents = new Map<string, number>();
     for (const [c, v] of cells) {
       const p = cellToParent(c, 8);
       parents.set(p, (parents.get(p) ?? 0) + v.score);
     }
-    const cut = percentile([...parents.values()], 0.72);
-    const max = Math.max(1, ...parents.values());
+    return parents;
+  }, [cells]);
+
+  // Danger zones for people: proportional circles over ~0.3 sq mi areas, with incident counts.
+  useEffect(() => {
+    if (!mapReady) return;
+    const cut = percentile([...parentScores.values()], 0.72);
+    const max = Math.max(1, ...parentScores.values());
     const zonesFc: unknown[] = [];
-    for (const [p, s] of parents) {
+    for (const [p, s] of parentScores) {
       if (s < cut) continue;
       const [lat, lng] = cellToLatLng(p);
-      zonesFc.push(pt([lng, lat], { m: 70 + 330 * Math.sqrt(s / max), s }));
+      let n = 0;
+      for (const c of cellToChildren(p, 9)) n += cells.get(c)?.events.length ?? 0;
+      const m = 70 + 330 * Math.sqrt(s / max);
+      zonesFc.push(pt([lng, lat], { m, mh: m * 1.22, s: Math.sqrt(s / max), n, cell8: p }));
     }
     setData("zones", fc(zonesFc));
-    // Engine view: every scored cell.
     const hex: unknown[] = [];
     const hmax = Math.max(1, ...[...cells.values()].map((c) => c.score));
     for (const [c, v] of cells) hex.push(hexFeature(c, { s: Math.max(0.06, Math.min(1, Math.log1p(v.score) / Math.log1p(hmax))) }));
     setData("hex", fc(hex));
-  }, [cells, mapReady, setData]);
+  }, [cells, parentScores, mapReady, setData]);
+
+  const zoneInfo = useCallback(
+    (cell8: string): ZoneInfo => {
+      const evs: Ev[] = [];
+      let bestCell = "", best = -1;
+      for (const c of cellToChildren(cell8, 9)) {
+        const v = cells.get(c);
+        if (!v) continue;
+        evs.push(...v.events);
+        if (v.score > best) [best, bestCell] = [v.score, c];
+      }
+      const where = new Map<string, number>();
+      const types = new Map<string, number>();
+      for (const e of evs) {
+        const p = placeOf(e.x);
+        where.set(p, (where.get(p) ?? 0) + 1);
+        types.set(e.t, (types.get(e.t) ?? 0) + 1);
+      }
+      const all = [...parentScores.values()].sort((a, b) => a - b);
+      const s = parentScores.get(cell8) ?? 0;
+      const rankPct = Math.max(1, Math.round(100 - (all.filter((x) => x <= s).length / all.length) * 100));
+      return {
+        cell8,
+        place: [...where].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "",
+        calls: evs.filter((e) => !e.t.startsWith("crash")).length,
+        crashes: evs.filter((e) => e.t.startsWith("crash")).length,
+        topType: [...types].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "",
+        peak: peakWindow(evs.map((e) => e.h)),
+        last: evs.length ? fmtDate(evs.map((e) => e.d).sort().at(-1)!) : "",
+        rankPct,
+        level: rankPct <= 5 ? "High" : rankPct <= 15 ? "Elevated" : "Moderate",
+        bestCell,
+      };
+    },
+    [cells, parentScores],
+  );
 
   // ---------- geolocation ----------
   useEffect(() => {
@@ -428,6 +582,24 @@ export default function App() {
     if (mapReady) setData("havens", fc(havensOn ? havens.map((h) => pt([h.lng, h.lat], { name: h.label })) : []));
   }, [havens, havensOn, mapReady, setData]);
 
+  // ---------- recents + saved ----------
+  const remember = useCallback((p: Place) => {
+    setRecents((r) => {
+      const next = [{ p, t: Date.now() }, ...r.filter((x) => !samePlace(x.p, p))].slice(0, 20);
+      store("ns-recents", next);
+      return next;
+    });
+  }, []);
+  const toggleSave = (list: ListId, p: Place) =>
+    setSaved((s) => {
+      const has = s[list].some((x) => samePlace(x, p));
+      const next = { ...s, [list]: has ? s[list].filter((x) => !samePlace(x, p)) : [p, ...s[list]] };
+      store("ns-saved", next);
+      setToast(has ? `Removed from ${LISTS.find((l) => l.id === list)!.label}` : `Saved to ${LISTS.find((l) => l.id === list)!.label}`);
+      return next;
+    });
+  const isSaved = (list: ListId, p: Place) => saved[list].some((x) => samePlace(x, p));
+
   // ---------- search ----------
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const search = (field: "search" | "from" | "to", q: string) => {
@@ -435,14 +607,15 @@ export default function App() {
     if (q.trim().length < 2) return setSuggest(null);
     searchTimer.current = setTimeout(async () => {
       const [w, s, e, n] = CITY.bbox;
-      const bias = myPos && meInCity ? `&lat=${myPos[1]}&lon=${myPos[0]}` : `&lat=${CITY.center[1]}&lon=${CITY.center[0]}`;
+      const bias = meInCity ? `&lat=${myPos![1]}&lon=${myPos![0]}` : `&lat=${center[1]}&lon=${center[0]}`;
       try {
         const j = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&bbox=${w},${s},${e},${n}&limit=6&lang=en${bias}`).then((r) => r.json());
         const items: Place[] = j.features.map((f: { properties: Record<string, string>; geometry: { coordinates: [number, number] } }) => {
           const pr = f.properties;
           const street = pr.street ? `${pr.housenumber ?? ""} ${pr.street}`.trim() : "";
           return {
-            label: [pr.name ?? street, pr.name ? street : "", pr.district ?? pr.locality ?? ""].filter(Boolean).join(", "),
+            label: pr.name ?? street,
+            addr: [pr.name ? street : "", pr.district ?? pr.locality ?? ""].filter(Boolean).join(", "),
             lng: f.geometry.coordinates[0],
             lat: f.geometry.coordinates[1],
           };
@@ -452,14 +625,109 @@ export default function App() {
     }, 250);
   };
 
+  const fit = useCallback((coords: [number, number][], maxZoom = 17) => {
+    const map = mapRef.current;
+    if (!map || !coords.length) return;
+    const xs = coords.map((c) => c[0]), ys = coords.map((c) => c[1]);
+    const wide = window.innerWidth > 760;
+    const leftPanel = viewRef.current === "nav" ? (document.querySelector(".dir, .side") ? 72 + 408 : 72) : 0;
+    map.fitBounds(
+      [
+        [Math.min(...xs), Math.min(...ys)],
+        [Math.max(...xs), Math.max(...ys)],
+      ],
+      {
+        padding: wide ? { top: 90, bottom: 60, left: (leftPanel || 60) + 30, right: viewRef.current === "engine" ? 530 : 80 } : { top: 140, bottom: window.innerHeight * 0.5 + 20, left: 30, right: 30 },
+        duration: 700,
+        maxZoom,
+      },
+    );
+  }, []);
+
+  const openCategory = useCallback(
+    async (cat: string) => {
+      setPanel("results");
+      setDirOpen(false);
+      setCategory(cat);
+      setPlaces([]);
+      setPlacesBusy(true);
+      setSuggest(null);
+      setSearchFocus(false);
+      setQuery(CAT[cat]?.label ?? cat);
+      setPoi(null);
+      setZoneCard(null);
+      const [lng, lat] = meInCity ? myPos! : center;
+      try {
+        const found = await searchCategory(cat, lat, lng);
+        const items: Place[] = found.map((p) => ({ label: p.name, lat: p.lat, lng: p.lng, addr: p.addr, dist: p.dist, cat }));
+        setPlaces(items);
+        addLog(`Place search · ${CAT[cat]?.label} · ${items.length} results from OpenStreetMap`, "data");
+        if (items.length) setTimeout(() => fit(items.map((p) => [p.lng, p.lat]), 16), 50);
+      } catch {
+        setToast("Couldn't load places right now.");
+      } finally {
+        setPlacesBusy(false);
+      }
+    },
+    [meInCity, myPos, center, fit, addLog],
+  );
+
+  // Place markers with category icons.
+  useEffect(() => {
+    const map = mapRef.current, ml = mlRef.current;
+    for (const { m, root } of markers.current) {
+      m.remove();
+      setTimeout(() => root.unmount());
+    }
+    markers.current = [];
+    if (!map || !ml || view !== "nav") return;
+    for (const p of places) {
+      const c = CAT[p.cat ?? ""];
+      const el = document.createElement("button");
+      el.className = `poi-marker ${poi && samePlace(poi, p) ? "on" : ""}`;
+      el.style.setProperty("--c", c?.color ?? "#1a73e8");
+      el.setAttribute("aria-label", p.label);
+      const root = createRoot(el);
+      const Icon = c?.icon ?? MapPin;
+      root.render(
+        <>
+          <span className="pm-dot">
+            <Icon size={14} strokeWidth={2.4} />
+          </span>
+          <span className="pm-label">{p.label}</span>
+        </>,
+      );
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        setPoi(p);
+        setPin(null);
+        setZoneCard(null);
+      });
+      markers.current.push({ m: new ml.Marker({ element: el, anchor: "left", offset: [-13, 0] }).setLngLat([p.lng, p.lat]).addTo(map), root });
+    }
+  }, [places, poi, view, mapReady]);
+
   const goTo = (p: Place) => {
     setTo(p);
     setToText(p.label);
     setQuery(p.label);
     setDirOpen(true);
     setSuggest(null);
+    setSearchFocus(false);
     setPin(null);
-    if (!fromIsMe && !from) setFromText("");
+    setPoi(null);
+    setZoneCard(null);
+    remember(p);
+  };
+  const showPlace = (p: Place) => {
+    setPoi(p);
+    setPin(null);
+    setZoneCard(null);
+    setSuggest(null);
+    setSearchFocus(false);
+    setQuery(p.label);
+    remember(p);
+    mapRef.current?.flyTo({ center: [p.lng, p.lat], zoom: Math.max(mapRef.current.getZoom(), 15.5) });
   };
   const setStart = (p: Place) => {
     setFromIsMe(false);
@@ -467,6 +735,7 @@ export default function App() {
     setFromText(p.label);
     setSuggest(null);
     setPin(null);
+    setPoi(null);
   };
   const closeDirections = () => {
     setDirOpen(false);
@@ -475,7 +744,7 @@ export default function App() {
     setQuery("");
     setResult(null);
     setError("");
-    for (const id of ["route", "routeAlt", "avoid", "ends"]) setData(id, fc([]));
+    for (const id of ["route", "routeAlt", "avoid", "ends", "sel"]) setData(id, fc([]));
   };
   const swap = () => {
     if (!to) return;
@@ -485,6 +754,11 @@ export default function App() {
       setTo(oldStart);
       setToText(oldStart.label);
     }
+  };
+  const submitSearch = () => {
+    const cat = categoryFor(query);
+    if (cat) return openCategory(cat);
+    if (suggest?.items[0]) showPlace(suggest.items[0]);
   };
 
   const voice = () => {
@@ -497,12 +771,23 @@ export default function App() {
     r.onresult = (e) => {
       const text = e.results[0][0].transcript;
       setQuery(text);
-      search("search", text);
+      const cat = categoryFor(text);
+      if (cat) openCategory(cat);
+      else search("search", text);
     };
     r.start();
   };
 
   // ---------- routing ----------
+  const isNight = useCallback(
+    (d: Date) => {
+      const sunset = sources?.weather?.sunset ? new Date(sources.weather.sunset) : null;
+      if (sunset && d.toDateString() === sunset.toDateString()) return d > sunset || d.getHours() < 6;
+      return d.getHours() >= 19 || d.getHours() < 6;
+    },
+    [sources],
+  );
+
   const fetchRoutes = async (m: Mode, a: Place, b: Place, night: boolean, exclude?: [number, number][][], alternates = 2) => {
     const res = await fetch("/api/route", {
       method: "POST",
@@ -514,25 +799,6 @@ export default function App() {
     return j.routes as Route[];
   };
 
-  const fit = useCallback((coords: [number, number][]) => {
-    const map = mapRef.current;
-    if (!map || !coords.length) return;
-    const xs = coords.map((c) => c[0]), ys = coords.map((c) => c[1]);
-    const wide = window.innerWidth > 760;
-    map.fitBounds(
-      [
-        [Math.min(...xs), Math.min(...ys)],
-        [Math.max(...xs), Math.max(...ys)],
-      ],
-      {
-        padding: wide
-          ? { top: 80, bottom: 60, left: viewRef.current === "nav" ? 440 : 60, right: viewRef.current === "engine" ? 520 : 80 }
-          : { top: 120, bottom: window.innerHeight * 0.5 + 20, left: 30, right: 30 },
-        duration: 700,
-      },
-    );
-  }, []);
-
   const computeId = useRef(0);
   const compute = useCallback(
     async (opts?: { quiet?: boolean; reason?: string }) => {
@@ -543,8 +809,8 @@ export default function App() {
       setError("");
       const T0 = performance.now();
       try {
-        const night = when.getHours() >= 19 || when.getHours() < 6;
-        addLog(`${opts?.reason ?? "Route request"} · ${mode} · ${a.label} → ${b.label}${night ? " · night: prefer lit streets" : ""}`, "route");
+        const night = isNight(when);
+        addLog(`${opts?.reason ?? "Route request"} · ${mode} · ${a.label} → ${b.label}${night ? " · after sunset: prefer lit streets" : ""}`, "route");
         const fastRoutes = await fetchRoutes(mode, a, b, night);
         const fastest = fastRoutes[0];
         addLog(`Router returned ${fastRoutes.length} candidate${fastRoutes.length > 1 ? "s" : ""} in ${Math.round(performance.now() - T0)} ms`, "route");
@@ -576,7 +842,7 @@ export default function App() {
           perimeter = perim;
         }
         const exclude = polys.map((p) => p[0] as [number, number][]);
-        addLog(`${candidates.size} high-risk cells near the trip → ${chosen.length} avoided as ${exclude.length} polygon${exclude.length === 1 ? "" : "s"} (${(perimeter / 1000).toFixed(1)} km perimeter)`, "route");
+        addLog(`${candidates.size} high-risk cells near the trip → ${chosen.length} avoided as ${exclude.length} polygon${exclude.length === 1 ? "" : "s"} (${((perimeter / 1000) * 0.621371).toFixed(1)} mi perimeter)`, "route");
 
         let roads: Roads | null = null;
         if (mode === "car" || mode === "moped") {
@@ -597,7 +863,7 @@ export default function App() {
         const fastScored = scored[0];
         const limit = fastScored.minutes * 1.4 + 3;
         const safer = scored.filter((r) => r.minutes <= limit).reduce((best, r) => (r.risk + 4 * r.minutes < best.risk + 4 * best.minutes ? r : best), fastScored);
-        addLog(`Scored ${scored.length} routes (risk × minutes): ${scored.map((r) => `${Math.round(r.minutes)}m/${Math.round(r.risk)}`).join(", ")}`, "route");
+        addLog(`Scored ${scored.length} routes (minutes / risk): ${scored.map((r) => `${Math.round(r.minutes)}/${Math.round(r.risk)}`).join(", ")}`, "route");
 
         const onSafe = routeRisk(safer.coords, safer.minutes, cells, live).cellsOnRoute;
         const avoided: Avoided[] = [...onFast.keys()]
@@ -616,23 +882,17 @@ export default function App() {
           .sort((p, q) => p.dist - q.dist)
           .slice(0, 4);
 
-        const res: Result = { safer, fastest: fastScored, avoided, timeline, cams };
-        setResult(res);
+        setResult({ safer, fastest: fastScored, avoided, timeline, cams });
         setPick("safer");
         setData("avoid", fc(polys.map((p) => ({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: p[0] } }))));
         const same = safer === fastScored;
         const pct = fastScored.risk > 0 ? Math.round((1 - safer.risk / fastScored.risk) * 100) : 0;
         addLog(
-          same
-            ? `Fastest route is already lowest-risk · ${Math.round(safer.minutes)} min`
-            : `Chose safer route: ${pct}% less risk for +${Math.max(0, Math.round(safer.minutes - fastScored.minutes))} min · total ${Math.round(performance.now() - T0)} ms`,
+          same ? `Fastest route is already lowest-risk · ${Math.round(safer.minutes)} min` : `Chose safer route: ${pct}% less risk for +${Math.max(0, Math.round(safer.minutes - fastScored.minutes))} min · total ${Math.round(performance.now() - T0)} ms`,
           "route",
         );
         setAnnounce(`${t("saferRoute")}: ${Math.round(safer.minutes)} ${t("min")}, ${pct}% ${t("lessRisk")}.`);
         if (!opts?.quiet) fit([...fastScored.coords, ...safer.coords]);
-        try {
-          localStorage.setItem("ns-last", JSON.stringify({ from: a, to: b, mode, fromIsMe }));
-        } catch {}
       } catch (e) {
         if (id === computeId.current) setError(t("noRoute"));
         addLog(`Routing failed: ${String(e).slice(0, 80)}`, "route");
@@ -641,7 +901,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [startKey, to, events, mode, when, cells, live, threshold, t, setData, addLog, fit, fromIsMe],
+    [startKey, to, events, mode, when, cells, live, threshold, t, setData, addLog, fit, fromIsMe, isNight],
   );
 
   // Route automatically whenever start, destination, mode or departure time change.
@@ -658,7 +918,6 @@ export default function App() {
     lastQuiet.current = false;
   }, [to, startKey]);
 
-  // Draw the chosen route blue and the other one grey (tap grey to switch).
   useEffect(() => {
     if (!mapReady) return;
     if (!result) {
@@ -695,19 +954,16 @@ export default function App() {
     (c: string | null, fly = false) => {
       setSelectedCell(c);
       if (!c) {
-        setData("sel", fc([]));
-        setData("selLinks", fc([]));
-        setData("selPts", fc([]));
+        for (const id of ["sel", "selLinks", "selPts"]) setData(id, fc([]));
         return;
       }
-      const center = cellCenter(c);
+      const ctr = cellCenter(c);
       const contributing = (cells.get(c)?.events ?? []).filter((e) => contribution(e, mode, when).value > 0);
       setData("sel", fc([hexFeature(c)]));
-      setData("selLinks", fc(contributing.map((e) => line([center, [e.lng, e.lat]]))));
+      setData("selLinks", fc(contributing.map((e) => line([ctr, [e.lng, e.lat]]))));
       setData("selPts", fc(contributing.map((e) => pt([e.lng, e.lat], { k: e.t.startsWith("crash") ? "crash" : "crime" }))));
       addLog(`Inspect cell ${c} · ${contributing.length} contributing signals · score ${(cells.get(c)?.score ?? 0).toFixed(1)}`, "pick");
-      if (fly) mapRef.current?.flyTo({ center, zoom: 16, duration: 900, padding: window.innerWidth > 760 ? { right: 480, left: 0, top: 0, bottom: 0 } : { bottom: window.innerHeight * 0.5, top: 0, left: 0, right: 0 } });
-      // Pulse the outline.
+      if (fly) mapRef.current?.flyTo({ center: ctr, zoom: 16, duration: 900, padding: window.innerWidth > 760 ? { right: 520, left: 0, top: 0, bottom: 0 } : { bottom: window.innerHeight * 0.5, top: 0, left: 0, right: 0 } });
       const map = mapRef.current;
       const t0 = performance.now();
       const pulse = (now: number) => {
@@ -728,18 +984,29 @@ export default function App() {
   clickRef.current = (e: MapMouseEvent) => {
     const map = mapRef.current;
     if (!map) return;
+    setLayersOpen(false);
     if (viewRef.current === "engine") {
       selectCell(latLngToCell(e.lngLat.lat, e.lngLat.lng, 9), map.getZoom() < 14.5);
       return;
     }
-    const hits = map.queryRenderedFeatures(e.point, { layers: ["live", "route-alt"].filter((l) => map.getLayer(l)) });
-    const hit = hits[0];
+    const hits = map.queryRenderedFeatures(e.point, { layers: ["live", "route-alt", "zones"].filter((l) => map.getLayer(l)) });
+    const hit = hits.find((h) => h.layer.id !== "zones") ?? hits[0];
     if (hit?.layer.id === "route-alt") return setPick(hit.properties.alt);
-    if (hit?.layer.id === "live" && hit.properties.kind === "report") {
-      return setReportCard({ ids: String(hit.properties.ids).split(","), category: hit.properties.category, count: hit.properties.count });
-    }
+    if (hit?.layer.id === "live" && hit.properties.kind === "report") return setReportCard({ ids: String(hit.properties.ids).split(","), category: hit.properties.category, count: hit.properties.count });
     setReportCard(null);
+    setPoi(null);
+    if (hit?.layer.id === "zones") {
+      setPin(null);
+      return setZoneCard(zoneInfo(hit.properties.cell8));
+    }
+    setZoneCard(null);
     setPin({ label: t("droppedPin"), lng: e.lngLat.lng, lat: e.lngLat.lat });
+  };
+
+  const explainZone = (z: ZoneInfo) => {
+    setZoneCard(null);
+    setView("engine");
+    setTimeout(() => selectCell(z.bestCell, true), 60);
   };
 
   // ---------- sound alerts ----------
@@ -755,11 +1022,7 @@ export default function App() {
       const [lng, lat] = at ?? here();
       navigator.vibrate?.([300, 100, 300]);
       addLog(`Microphone: ${d.label} detected on this phone (confidence ${(d.confidence * 100).toFixed(0)}%) · audio stays on device`, "live");
-      const j = await fetch("/api/live", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "sound", lat, lng, device: device.current, confidence: d.confidence }),
-      }).then((r) => r.json());
+      const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sound", lat, lng, device: device.current, confidence: d.confidence }) }).then((r) => r.json());
       setZones(j.zones);
       setAlert({ id: j.id, d });
     },
@@ -791,11 +1054,7 @@ export default function App() {
 
   const answer = async (ans: "safe" | "danger") => {
     if (!alert) return;
-    const j = await fetch("/api/live", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "answer", id: alert.id, answer: ans }),
-    }).then((r) => r.json());
+    const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "answer", id: alert.id, answer: ans }) }).then((r) => r.json());
     setZones(j.zones);
     setAlert(null);
     addLog(`User answered "${ans}"${ans === "danger" ? " → alert confirmed" : ""}`, "live");
@@ -813,24 +1072,16 @@ export default function App() {
   };
 
   // ---------- reports ----------
-  const sendReport = async (category: string) => {
+  const sendReport = async (cat: string) => {
     const [lng, lat] = here();
-    const j = await fetch("/api/live", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "report", category, lat, lng, device: device.current }),
-    }).then((r) => r.json());
+    const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "report", category: cat, lat, lng, device: device.current }) }).then((r) => r.json());
     setZones(j.zones);
     setReportOpen(false);
     setToast(t("reported"));
   };
   const vote = async (v: "confirm" | "gone") => {
     if (!reportCard) return;
-    const j = await fetch("/api/live", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "vote", ids: reportCard.ids, device: device.current, vote: v }),
-    }).then((r) => r.json());
+    const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "vote", ids: reportCard.ids, device: device.current, vote: v }) }).then((r) => r.json());
     setZones(j.zones);
     setReportCard(null);
   };
@@ -838,27 +1089,14 @@ export default function App() {
   // ---------- safe places (optional) ----------
   useEffect(() => {
     if (!havensOn || havens.length) return;
-    const [w, s, e, n] = CITY.bbox;
-    const q = `[out:json][timeout:20];(nwr["amenity"~"^(hospital|police|fire_station)$"](${s},${w},${n},${e});nwr["opening_hours"="24/7"]["shop"](${s},${w},${n},${e});nwr["opening_hours"="24/7"]["amenity"~"^(pharmacy|fuel|cafe|fast_food)$"](${s},${w},${n},${e}););out center 400;`;
-    fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: "data=" + encodeURIComponent(q) })
-      .then((r) => r.json())
-      .then((j) =>
-        setHavens(
-          j.elements
-            .map((el: { lat?: number; lon?: number; center?: { lat: number; lon: number }; tags?: Record<string, string> }) => ({
-              label: el.tags?.name ?? el.tags?.amenity ?? "Open 24/7",
-              lat: el.lat ?? el.center?.lat,
-              lng: el.lon ?? el.center?.lon,
-            }))
-            .filter((p: Place) => p.lat && p.lng),
-        ),
-      )
+    nearbyByTags(["amenity:hospital", "amenity:police", "amenity:fire_station", "amenity:pharmacy"], CITY.center[1], CITY.center[0], 50, 9)
+      .then((items) => setHavens(items.map((p) => ({ label: p.name, lat: p.lat, lng: p.lng }))))
       .catch(() => setToast("Couldn't load safe places right now."));
   }, [havensOn, havens.length]);
 
   useEffect(() => {
     if (!toast) return;
-    const id = setTimeout(() => setToast(""), 4500);
+    const id = setTimeout(() => setToast(""), 4000);
     return () => clearTimeout(id);
   }, [toast]);
 
@@ -879,50 +1117,140 @@ export default function App() {
   const bestOffset = r ? r.timeline.reduce((b, x) => (x.risk < b.risk ? x : b)).offset : 0;
   const offsetLabel = (o: number) => (o === 0 ? t("leaveNow") : `+${o >= 60 ? `${o / 60} h` : `${o} min`}`);
   const showDir = view === "nav" && dirOpen;
+  const showSide = view === "nav" && !dirOpen && panel !== "none";
+  const recQuery = query.trim().toLowerCase();
+  const catHint = recQuery.length >= 2 ? CAT_UI.filter((c) => c.label.toLowerCase().startsWith(recQuery) || categoryFor(recQuery) === c.id) : [];
+  const card = view === "nav" ? (poi ? "poi" : zoneCard ? "zone" : reportCard ? "report" : pin ? "pin" : null) : null;
 
   return (
-    <div className={`app ${largeText ? "large" : ""} ${contrast ? "contrast" : ""} view-${view} ${showDir ? "dir-open" : ""}`} lang={lang}>
+    <div className={`app ${largeText ? "large" : ""} ${contrast ? "contrast" : ""} view-${view} ${showDir || showSide ? "panel-open" : ""}`} lang={lang}>
       <div ref={mapDiv} className="map" role="application" aria-label={view === "engine" ? "Map. Click a spot to inspect its risk." : "Map. Click to drop a pin."} />
+
+      {/* ----- left rail (desktop) ----- */}
+      {view === "nav" && (
+        <nav className="rail" aria-label="Main">
+          <button className="rail-btn" onClick={() => setDrawer(true)} aria-label={t("menu")}>
+            <Menu size={22} />
+          </button>
+          <button className={`rail-btn ${showSide && panel === "saved" ? "on" : ""}`} onClick={() => { setDirOpen(false); setPanel(panel === "saved" ? "none" : "saved"); }}>
+            <span className="rail-ico">
+              <Bookmark size={20} />
+            </span>
+            <span>Saved</span>
+          </button>
+          <button className={`rail-btn ${showSide && panel === "recents" ? "on" : ""}`} onClick={() => { setDirOpen(false); setPanel(panel === "recents" ? "none" : "recents"); }}>
+            <span className="rail-ico">
+              <History size={20} />
+            </span>
+            <span>Recents</span>
+          </button>
+          <span className="rail-sep" />
+          {recents.slice(0, 3).map((x) => (
+            <button key={`${x.p.lat},${x.p.lng}`} className="rail-recent" onClick={() => showPlace(x.p)} title={x.p.label}>
+              <span className="rail-thumb">{x.p.cat && CAT[x.p.cat] ? (() => { const I = CAT[x.p.cat!].icon; return <I size={16} />; })() : <MapPin size={16} />}</span>
+              <span>{x.p.label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
 
       {/* ----- top bar ----- */}
       <div className="topbar">
         {view === "nav" && !showDir && (
           <div className="searchwrap">
             <div className="searchbox card">
-              <button className="icon-btn" onClick={() => setDrawer(true)} aria-label={t("menu")}>
+              <button className="icon-btn menu-mobile" onClick={() => setDrawer(true)} aria-label={t("menu")}>
                 <Menu size={20} />
               </button>
               <input
                 value={query}
                 placeholder={t("search")}
                 aria-label={t("search")}
+                onFocus={() => setSearchFocus(true)}
+                onBlur={() => setTimeout(() => setSearchFocus(false), 180)}
                 onChange={(e) => {
                   setQuery(e.target.value);
                   search("search", e.target.value);
                 }}
-                onKeyDown={(e) => e.key === "Enter" && suggest?.items[0] && goTo(suggest.items[0])}
+                onKeyDown={(e) => e.key === "Enter" && submitSearch()}
               />
-              <button className="icon-btn" onClick={voice} aria-label={t("voice")}>
-                <Mic size={18} />
+              {query ? (
+                <button className="icon-btn" onClick={() => { setQuery(""); setSuggest(null); setPanel(panel === "results" ? "none" : panel); setPlaces([]); setCategory(null); }} aria-label={t("close")}>
+                  <X size={18} />
+                </button>
+              ) : (
+                <button className="icon-btn" onClick={voice} aria-label={t("voice")}>
+                  <Mic size={18} />
+                </button>
+              )}
+              <button className="icon-btn" onClick={submitSearch} aria-label="Search">
+                <Search size={18} />
               </button>
               <span className="divider" />
               <button className="icon-btn accent" onClick={() => setDirOpen(true)} aria-label={t("directions")} title={t("directions")}>
                 <Navigation size={18} />
               </button>
             </div>
-            {suggest?.field === "search" && <Suggestions items={suggest.items} onPick={goTo} />}
+            {searchFocus && (
+              <div className="suggest card" role="listbox">
+                {!query && (
+                  <>
+                    <div className="sg-chips">
+                      {CAT_UI.slice(0, 6).map((c) => (
+                        <button key={c.id} className="sg-chip" onMouseDown={() => openCategory(c.id)}>
+                          <c.icon size={15} style={{ color: c.color }} /> {c.label}
+                        </button>
+                      ))}
+                    </div>
+                    {recents.length > 0 && <p className="sg-head">Recent</p>}
+                    {recents.slice(0, 5).map((x) => (
+                      <button key={`${x.p.lat},${x.p.lng}`} className="sg-row" role="option" aria-selected={false} onMouseDown={() => showPlace(x.p)}>
+                        <span className="sg-ico">
+                          <History size={16} />
+                        </span>
+                        <span className="sg-text">
+                          <strong>{x.p.label}</strong>
+                          {x.p.addr && <span>{x.p.addr}</span>}
+                        </span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {catHint.map((c) => (
+                  <button key={c.id} className="sg-row" role="option" aria-selected={false} onMouseDown={() => openCategory(c.id)}>
+                    <span className="sg-ico cat" style={{ background: c.color }}>
+                      <c.icon size={15} />
+                    </span>
+                    <span className="sg-text">
+                      <strong>{c.label} nearby</strong>
+                      <span>Search by type near {meInCity ? "you" : "this area"}</span>
+                    </span>
+                  </button>
+                ))}
+                {query &&
+                  suggest?.field === "search" &&
+                  suggest.items.map((p, i) => (
+                    <button key={i} className="sg-row" role="option" aria-selected={false} onMouseDown={() => showPlace(p)}>
+                      <span className="sg-ico">
+                        <MapPin size={16} />
+                      </span>
+                      <span className="sg-text">
+                        <strong>{p.label}</strong>
+                        {p.addr && <span>{p.addr}</span>}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )}
           </div>
         )}
         {view === "nav" && !showDir && (
-          <div className="chips" role="radiogroup" aria-label="Travel mode">
-            {MODES.map((m) => {
-              const I = MODE_ICON[m];
-              return (
-                <button key={m} role="radio" aria-checked={mode === m} className={`chip ${mode === m ? "on" : ""}`} onClick={() => setMode(m)}>
-                  <I size={16} /> {t(m)}
-                </button>
-              );
-            })}
+          <div className="chips" role="toolbar" aria-label="Nearby">
+            {CAT_UI.slice(0, 8).map((c) => (
+              <button key={c.id} className={`chip ${category === c.id && panel === "results" ? "on" : ""}`} onClick={() => openCategory(c.id)}>
+                <c.icon size={16} style={{ color: category === c.id && panel === "results" ? undefined : c.color }} /> {c.label}
+              </button>
+            ))}
           </div>
         )}
         {view === "engine" && (
@@ -949,6 +1277,123 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {/* ----- side panel: saved / recents / place results ----- */}
+      {showSide && (
+        <section className="side" aria-label={panel}>
+          {panel === "results" && (
+            <>
+              <div className="side-head">
+                <h2>{CAT[category ?? ""]?.label ?? "Results"}</h2>
+                <p className="fine">Near {meInCity ? "you" : "the map center"} · OpenStreetMap</p>
+              </div>
+              {placesBusy && <div className="progress" role="progressbar" />}
+              {!placesBusy && !places.length && <p className="notice">No places found here. Move the map and try again.</p>}
+              <ul className="results">
+                {places.map((p, i) => {
+                  const c = CAT[p.cat ?? ""];
+                  return (
+                    <li key={i}>
+                      <button className={`res ${poi && samePlace(poi, p) ? "on" : ""}`} onClick={() => showPlace(p)}>
+                        <span className="res-ico" style={{ background: c?.color }}>
+                          {c && <c.icon size={16} />}
+                        </span>
+                        <span className="res-text">
+                          <strong>{p.label}</strong>
+                          <span>{[p.addr, p.dist !== undefined ? fmtDist(p.dist) : ""].filter(Boolean).join(" · ")}</span>
+                          {p.hours && <span className="fine">{p.hours.length > 40 ? `${p.hours.slice(0, 40)}…` : p.hours}</span>}
+                        </span>
+                      </button>
+                      <button className="icon-btn res-go" onClick={() => goTo(p)} aria-label={`${t("directions")}: ${p.label}`}>
+                        <Navigation size={17} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+          {panel === "recents" && (
+            <>
+              <div className="side-head">
+                <h2>Recents</h2>
+                <div className="pill-row">
+                  <span className="pill-chip on">All {recents.length}</span>
+                  {recents.length > 0 && (
+                    <button className="pill-chip" onClick={() => { setRecents([]); store("ns-recents", []); }}>
+                      <Trash2 size={14} /> Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+              {!recents.length && <p className="notice">Places you search for and visit will show up here.</p>}
+              <ul className="results">
+                {recents.map((x) => {
+                  const c = CAT[x.p.cat ?? ""];
+                  return (
+                    <li key={`${x.p.lat},${x.p.lng}`}>
+                      <button className="res" onClick={() => showPlace(x.p)}>
+                        <span className="res-ico muted-ico" style={c ? { background: c.color, color: "#fff" } : undefined}>
+                          {c ? <c.icon size={16} /> : <History size={16} />}
+                        </span>
+                        <span className="res-text">
+                          <strong>{x.p.label}</strong>
+                          <span>{[x.p.addr, fmtAgo(x.t)].filter(Boolean).join(" · ")}</span>
+                        </span>
+                      </button>
+                      <button className="icon-btn res-go" onClick={() => goTo(x.p)} aria-label={`${t("directions")}: ${x.p.label}`}>
+                        <Navigation size={17} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+          {panel === "saved" && (
+            <>
+              <div className="side-head">
+                <h2>Saved</h2>
+                <p className="fine">Lists stay on this device.</p>
+              </div>
+              <ul className="lists">
+                {LISTS.map((l) => (
+                  <li key={l.id}>
+                    <button className="list-row" onClick={() => setOpenList(openList === l.id ? null : l.id)} aria-expanded={openList === l.id}>
+                      <l.icon size={22} style={{ color: l.color }} />
+                      <span className="res-text">
+                        <strong>{l.label}</strong>
+                        <span>
+                          Private · {saved[l.id].length} {saved[l.id].length === 1 ? "place" : "places"}
+                        </span>
+                      </span>
+                      <ChevronDown size={18} className={openList === l.id ? "flip" : ""} />
+                    </button>
+                    {openList === l.id && (
+                      <ul className="results nested">
+                        {!saved[l.id].length && <li className="fine pad">Tap the {l.label.toLowerCase()} button on any place to add it.</li>}
+                        {saved[l.id].map((p) => (
+                          <li key={`${p.lat},${p.lng}`}>
+                            <button className="res" onClick={() => showPlace(p)}>
+                              <span className="res-text">
+                                <strong>{p.label}</strong>
+                                {p.addr && <span>{p.addr}</span>}
+                              </span>
+                            </button>
+                            <button className="icon-btn res-go" onClick={() => toggleSave(l.id, p)} aria-label={`Remove ${p.label}`}>
+                              <X size={16} />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
+      )}
 
       {/* ----- directions panel ----- */}
       {showDir && (
@@ -996,14 +1441,7 @@ export default function App() {
                     onPick={setStart}
                     extra={
                       meInCity ? (
-                        <button
-                          role="option"
-                          aria-selected={false}
-                          onClick={() => {
-                            setFromIsMe(true);
-                            setSuggest(null);
-                          }}
-                        >
+                        <button role="option" aria-selected={false} onClick={() => { setFromIsMe(true); setSuggest(null); }}>
                           <LocateFixed size={16} /> {t("yourLocation")}
                         </button>
                       ) : null
@@ -1038,6 +1476,11 @@ export default function App() {
                 </option>
               ))}
             </select>
+            {isNight(when) && (
+              <span className="night-tag">
+                <MoonStar size={13} /> After sunset · lit streets preferred
+              </span>
+            )}
           </div>
           {busy && <div className="progress" role="progressbar" aria-label={t("finding")} />}
 
@@ -1052,27 +1495,38 @@ export default function App() {
                     on={pick === "safer" || same}
                     onClick={() => setPick("safer")}
                     minutes={r.safer.minutes}
-                    km={r.safer.km}
+                    mi={r.safer.mi}
                     title={same ? `${t("saferRoute")} · ${t("fastestRoute")}` : t("saferRoute")}
                     tag={same ? undefined : `${pctLess}% ${t("lessRisk")}`}
                     sub={same ? t("sameRoute") : `${t("recommended")} · +${Math.max(0, Math.round(r.safer.minutes - r.fastest.minutes))} ${t("extraMin")}`}
                   />
-                  {!same && <RouteOption on={pick === "fastest"} onClick={() => setPick("fastest")} minutes={r.fastest.minutes} km={r.fastest.km} title={t("fastestRoute")} sub={`${t("risk")} ${Math.round(r.fastest.risk)} vs ${Math.round(r.safer.risk)}`} />}
+                  {!same && <RouteOption on={pick === "fastest"} onClick={() => setPick("fastest")} minutes={r.fastest.minutes} mi={r.fastest.mi} title={t("fastestRoute")} sub={`Passes ${r.avoided.length} higher-risk ${r.avoided.length === 1 ? "spot" : "spots"}`} />}
                 </div>
 
                 {r.avoided.length > 0 && (
-                  <section className="block">
-                    <h3>{t("why")}</h3>
-                    <ul className="reasons">
+                  <section className="block why">
+                    <div className="why-head">
+                      <span className="why-badge">
+                        <ShieldCheck size={18} />
+                      </span>
+                      <div>
+                        <h3>{t("why")}</h3>
+                        <p>
+                          Avoids {r.avoided.length} higher-risk {r.avoided.length === 1 ? "spot" : "spots"} on the fastest route
+                          {pctLess > 0 ? ` · ${pctLess}% less risk` : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <ul className="why-list">
                       {r.avoided.map((a) => (
                         <li key={a.cell}>
                           <button
                             onClick={() => {
                               setData("sel", fc([hexFeature(a.cell)]));
-                              mapRef.current?.flyTo({ center: cellCenter(a.cell), zoom: 16, padding: window.innerWidth > 760 ? { left: 420, right: 0, top: 0, bottom: 0 } : { bottom: window.innerHeight * 0.5, top: 0, left: 0, right: 0 } });
+                              mapRef.current?.flyTo({ center: cellCenter(a.cell), zoom: 16, padding: window.innerWidth > 760 ? { left: 480, right: 0, top: 0, bottom: 0 } : { bottom: window.innerHeight * 0.5, top: 0, left: 0, right: 0 } });
                             }}
                           >
-                            <Reason a={a} lang={lang} t={t} />
+                            <WhyItem a={a} lang={lang} t={t} />
                             <ChevronRight size={16} className="chev" />
                           </button>
                         </li>
@@ -1122,7 +1576,7 @@ export default function App() {
                         {chosen.steps.map((s, i) => (
                           <li key={i}>
                             <span>{s.text}</span>
-                            {s.km > 0 && <span className="fine">{s.km < 1 ? `${Math.round(s.km * 1000)} m` : `${s.km.toFixed(1)} km`}</span>}
+                            {s.mi > 0 && <span className="fine">{fmtDist(s.mi)}</span>}
                           </li>
                         ))}
                       </ol>
@@ -1152,6 +1606,8 @@ export default function App() {
           log={log}
           selected={selectedCell}
           onSelect={selectCell}
+          sources={sources}
+          center={center}
         />
       )}
 
@@ -1167,6 +1623,55 @@ export default function App() {
         </button>
       </div>
 
+      {/* ----- layers ----- */}
+      <div className="layers">
+        <button className={`layers-btn card ${layers.satellite ? "sat" : ""}`} onClick={() => setLayersOpen((o) => !o)} aria-expanded={layersOpen} aria-label="Layers">
+          <Layers size={18} />
+          <span>Layers</span>
+        </button>
+        {layersOpen && (
+          <div className="layers-pop card" role="dialog" aria-label="Map layers">
+            <p className="eyebrow">Map type</p>
+            <div className="lp-row">
+              <button className={`lp-tile ${!layers.satellite ? "on" : ""}`} onClick={() => setLayers((l) => ({ ...l, satellite: false }))}>
+                <span className="lp-thumb default">
+                  <MapIcon size={18} />
+                </span>
+                Default
+              </button>
+              <button className={`lp-tile ${layers.satellite ? "on" : ""}`} onClick={() => setLayers((l) => ({ ...l, satellite: true }))}>
+                <span className="lp-thumb satellite">
+                  <Satellite size={18} />
+                </span>
+                Satellite
+              </button>
+            </div>
+            <p className="eyebrow">Details</p>
+            <div className="lp-row">
+              <button className={`lp-tile ${layers.buildings ? "on" : ""}`} onClick={() => setLayers((l) => ({ ...l, buildings: !l.buildings }))}>
+                <span className="lp-thumb">
+                  <Building2 size={18} />
+                </span>
+                3D
+              </button>
+              <button className={`lp-tile ${layers.night ? "on" : ""}`} onClick={() => setLayers((l) => ({ ...l, night: !l.night }))}>
+                <span className="lp-thumb">
+                  <MoonStar size={18} />
+                </span>
+                Night lights
+              </button>
+              <button className={`lp-tile ${layers.zones ? "on" : ""}`} onClick={() => setLayers((l) => ({ ...l, zones: !l.zones }))}>
+                <span className="lp-thumb">
+                  <CircleDot size={18} />
+                </span>
+                Risk zones
+              </button>
+            </div>
+            <p className="fine">Satellite: USGS · Night lights: NASA</p>
+          </div>
+        )}
+      </div>
+
       {listenOn && (
         <div className="pill listening card" role="status">
           <Ear size={14} /> {t("listening")}
@@ -1178,32 +1683,86 @@ export default function App() {
         </div>
       )}
 
-      {/* ----- dropped pin ----- */}
-      {view === "nav" && pin && (
-        <div className="placecard card" role="dialog" aria-label={t("droppedPin")}>
+      {/* ----- bottom cards ----- */}
+      {card === "poi" && poi && (
+        <div className="placecard card" role="dialog" aria-label={poi.label}>
           <div className="pc-head">
-            <div>
-              <strong>{t("droppedPin")}</strong>
-              <span className="fine">
-                {pin.lat.toFixed(5)}, {pin.lng.toFixed(5)}
-              </span>
+            <div className="pc-title">
+              {poi.cat && CAT[poi.cat] && (
+                <span className="res-ico" style={{ background: CAT[poi.cat].color }}>
+                  {(() => {
+                    const I = CAT[poi.cat!].icon;
+                    return <I size={16} />;
+                  })()}
+                </span>
+              )}
+              <div>
+                <strong>{poi.label}</strong>
+                <span className="fine">{[poi.cat ? CAT[poi.cat]?.label.replace(/s$/, "") : "", poi.addr, meInCity ? fmtDist(miles(myPos!, [poi.lng, poi.lat])) : poi.dist !== undefined ? fmtDist(poi.dist) : ""].filter(Boolean).join(" · ")}</span>
+                {poi.hours && <span className="fine">Hours: {poi.hours}</span>}
+              </div>
             </div>
-            <button className="icon-btn" onClick={() => setPin(null)} aria-label={t("close")}>
+            <button className="icon-btn" onClick={() => setPoi(null)} aria-label={t("close")}>
               <X size={18} />
             </button>
           </div>
           <div className="pc-actions">
-            <button className="btn primary" onClick={() => goTo(pin)}>
+            <button className="btn primary" onClick={() => goTo(poi)}>
               <Navigation size={16} /> {t("directionsHere")}
             </button>
-            <button className="btn" onClick={() => setStart(pin)}>
+            <button className="btn" onClick={() => setStart(poi)}>
               {t("startHere")}
+            </button>
+            {LISTS.map((l) => (
+              <button key={l.id} className={`icon-btn save-btn ${isSaved(l.id, poi) ? "on" : ""}`} onClick={() => toggleSave(l.id, poi)} aria-pressed={isSaved(l.id, poi)} aria-label={`${l.label}`} title={l.label}>
+                <l.icon size={18} style={{ color: l.color }} fill={isSaved(l.id, poi) ? l.color : "none"} />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {card === "zone" && zoneCard && (
+        <div className="placecard zonecard card" role="dialog" aria-label="Risk area">
+          <div className="pc-head">
+            <div>
+              <span className={`level ${zoneCard.level.toLowerCase()}`}>{zoneCard.level} risk · top {zoneCard.rankPct}% in SF</span>
+              <strong>{zoneCard.place ? `Near ${zoneCard.place}` : "Higher-risk area"}</strong>
+              <span className="fine">For {t(mode).toLowerCase()} trips{offset ? ` in ${offsetLabel(offset).replace("+", "")}` : " right now"}</span>
+            </div>
+            <button className="icon-btn" onClick={() => setZoneCard(null)} aria-label={t("close")}>
+              <X size={18} />
+            </button>
+          </div>
+          <div className="zone-stats">
+            <div>
+              <Siren size={16} />
+              <strong>{zoneCard.calls}</strong>
+              <span>violent calls</span>
+            </div>
+            <div>
+              <CarFront size={16} />
+              <strong>{zoneCard.crashes}</strong>
+              <span>injury crashes</span>
+            </div>
+            <div>
+              <Clock size={16} />
+              <strong>{zoneCard.peak || "—"}</strong>
+              <span>busiest hours</span>
+            </div>
+          </div>
+          <p className="fine">
+            Most common: {EVENT_LABEL[lang][zoneCard.topType] ?? "—"} · last report {zoneCard.last}
+          </p>
+          <div className="pc-actions">
+            <button className="btn primary" onClick={() => explainZone(zoneCard)}>
+              <Cpu size={16} /> How it&apos;s calculated
             </button>
           </div>
         </div>
       )}
 
-      {view === "nav" && reportCard && (
+      {card === "report" && reportCard && (
         <div className="placecard card" role="dialog" aria-label={t("reportPrompt")}>
           <div className="pc-head">
             <div>
@@ -1227,6 +1786,33 @@ export default function App() {
         </div>
       )}
 
+      {card === "pin" && pin && (
+        <div className="placecard card" role="dialog" aria-label={t("droppedPin")}>
+          <div className="pc-head">
+            <div>
+              <strong>{t("droppedPin")}</strong>
+              <span className="fine">
+                {pin.lat.toFixed(5)}, {pin.lng.toFixed(5)}
+              </span>
+            </div>
+            <button className="icon-btn" onClick={() => setPin(null)} aria-label={t("close")}>
+              <X size={18} />
+            </button>
+          </div>
+          <div className="pc-actions">
+            <button className="btn primary" onClick={() => goTo(pin)}>
+              <Navigation size={16} /> {t("directionsHere")}
+            </button>
+            <button className="btn" onClick={() => setStart(pin)}>
+              {t("startHere")}
+            </button>
+            <button className={`icon-btn save-btn`} onClick={() => toggleSave("saved", pin)} aria-label="Save" title="Save">
+              <Bookmark size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ----- menu drawer ----- */}
       {drawer && (
         <div className="scrim" onClick={() => setDrawer(false)}>
@@ -1240,6 +1826,15 @@ export default function App() {
               </button>
             </div>
             <p className="fine">{t("tagline")}</p>
+
+            <div className="drawer-links">
+              <button onClick={() => { setDrawer(false); setDirOpen(false); setPanel("saved"); }}>
+                <Bookmark size={18} /> Saved
+              </button>
+              <button onClick={() => { setDrawer(false); setDirOpen(false); setPanel("recents"); }}>
+                <History size={18} /> Recents
+              </button>
+            </div>
 
             <h4>{t("appearance")}</h4>
             <div className="seg">
@@ -1341,7 +1936,10 @@ function Suggestions({ items, onPick, extra }: { items: Place[]; onPick: (p: Pla
         <li key={i}>
           <button role="option" aria-selected={false} onClick={() => onPick(p)}>
             <MapPin size={16} />
-            <span>{p.label}</span>
+            <span>
+              {p.label}
+              {p.addr && <span className="fine">{p.addr}</span>}
+            </span>
           </button>
         </li>
       ))}
@@ -1349,7 +1947,7 @@ function Suggestions({ items, onPick, extra }: { items: Place[]; onPick: (p: Pla
   );
 }
 
-function RouteOption(p: { on: boolean; onClick: () => void; minutes: number; km: number; title: string; tag?: string; sub: string }) {
+function RouteOption(p: { on: boolean; onClick: () => void; minutes: number; mi: number; title: string; tag?: string; sub: string }) {
   return (
     <button role="radio" aria-checked={p.on} className={`option ${p.on ? "on" : ""}`} onClick={p.onClick}>
       <div className="o-main">
@@ -1358,37 +1956,58 @@ function RouteOption(p: { on: boolean; onClick: () => void; minutes: number; km:
       </div>
       <div className="o-side">
         <span className="o-min">{Math.round(p.minutes)} min</span>
-        <span className="o-km">{p.km.toFixed(1)} km</span>
+        <span className="o-km">{fmtDist(p.mi)}</span>
         {p.tag && <span className="o-tag">{p.tag}</span>}
       </div>
     </button>
   );
 }
 
-function Reason({ a, lang, t }: { a: Avoided; lang: Lang; t: (k: Key) => string }) {
+function WhyItem({ a, lang, t }: { a: Avoided; lang: Lang; t: (k: Key) => string }) {
   if (a.live) {
     return (
-      <span className="r-text">
-        <strong className="r-live">{a.live.kind === "sound" ? (a.live.level === "confirmed" ? t("confirmed") : t("caution")) : t(`cat_${a.live.category}` as Key)}</strong>
+      <span className="why-item">
+        <span className="why-ico live">
+          <Radio size={16} />
+        </span>
+        <span className="why-text">
+          <strong>{a.live.kind === "sound" ? (a.live.level === "confirmed" ? t("confirmed") : t("caution")) : t(`cat_${a.live.category}` as Key)}</strong>
+          <span className="fine">Live alert · {a.live.count} {a.live.count === 1 ? "phone" : "phones"}</span>
+        </span>
       </span>
     );
   }
-  const counts = new Map<string, number>();
-  for (const e of a.events) counts.set(e.t, (counts.get(e.t) ?? 0) + 1);
+  const crashes = a.events.filter((e) => e.t.startsWith("crash"));
+  const calls = a.events.filter((e) => !e.t.startsWith("crash"));
+  const crime = calls.length * 2 >= crashes.length;
+  const where = new Map<string, number>();
+  for (const e of a.events) where.set(placeOf(e.x), (where.get(placeOf(e.x)) ?? 0) + 1);
+  const place = [...where].sort((x, y) => y[1] - x[1])[0]?.[0];
   const latest = [...a.events].sort((x, y) => y.d.localeCompare(x.d))[0];
-  const summary = [...counts]
-    .sort((x, y) => y[1] - x[1])
-    .slice(0, 2)
-    .map(([type, n]) => `${n} × ${EVENT_LABEL[lang][type] ?? type}`)
-    .join(" · ");
+  const topCall = (() => {
+    const m = new Map<string, number>();
+    for (const e of calls) m.set(e.t, (m.get(e.t) ?? 0) + 1);
+    return [...m].sort((x, y) => y[1] - x[1])[0];
+  })();
   return (
-    <span className="r-text">
-      <strong>{summary}</strong>
-      {latest && (
-        <span className="fine">
-          {t("latest")}: {latest.x} · {latest.d}
+    <span className="why-item">
+      <span className={`why-ico ${crime ? "crime" : "crash"}`}>{crime ? <Siren size={16} /> : <CarFront size={16} />}</span>
+      <span className="why-text">
+        <strong>{place ? `Near ${place}` : "Higher-risk block"}</strong>
+        <span className="why-chips">
+          {calls.length > 0 && (
+            <span className="wc crime">
+              {calls.length} {topCall && topCall[1] === calls.length ? (EVENT_LABEL[lang][topCall[0]] ?? "").toLowerCase() : "violent calls"}
+            </span>
+          )}
+          {crashes.length > 0 && <span className="wc crash">{crashes.length} injury crashes</span>}
         </span>
-      )}
+        {latest && (
+          <span className="fine">
+            Last report {fmtDate(latest.d)}, {fmtHour(latest.h)} · busiest {peakWindow(a.events.map((e) => e.h))}
+          </span>
+        )}
+      </span>
     </span>
   );
 }
