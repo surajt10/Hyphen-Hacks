@@ -1,5 +1,6 @@
 // Live status of every data source NorthStar uses, for the "How it works" panel.
 // Each feed is fetched server-side, timed, and cached for a minute.
+import { trafficIncidents } from "@/lib/traffic";
 type Feed = { id: string; name: string; provider: string; ok: boolean; ms: number; detail: string; updated?: string; value?: string };
 
 const cache = ((globalThis as unknown as { __ns_sources?: { at: number; data: unknown } }).__ns_sources ??= { at: 0, data: null });
@@ -21,14 +22,16 @@ const json = async (url: string) => {
 };
 
 const VIOLENT = "(call_type_final_desc like '%ASSAULT%' OR call_type_final_desc like '%FIGHT%' OR call_type_final_desc like '%ROBBERY%' OR call_type_final_desc like '%SHOT%' OR call_type_final_desc like '%SHOOT%' OR call_type_final_desc like '%W/GUN%' OR call_type_final_desc like '%W/KNIFE%' OR call_type_final_desc like '%STAB%')";
+const LIGHT_OUT = "service_name='Streetlights' AND status_description='Open' AND service_subtype in('Streetlight - Light_Burnt_Out','Streetlight - Light_Flickering_On_Off','Streetlight - Light_Dim','light','Streetlight - Pole_Knockdown') AND lat IS NOT NULL";
 const WMO: Record<number, string> = { 0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Fog", 51: "Drizzle", 53: "Drizzle", 55: "Drizzle", 61: "Rain", 63: "Rain", 65: "Heavy rain", 80: "Showers", 81: "Showers", 82: "Heavy showers", 95: "Thunderstorm" };
 
 export async function GET() {
   if (cache.data && Date.now() - cache.at < 60_000) return Response.json(cache.data);
   const since = new Date(Date.now() - 24 * 3600e3).toISOString().slice(0, 19);
   const since7 = new Date(Date.now() - 7 * 24 * 3600e3).toISOString().slice(0, 19);
+  const since180 = new Date(Date.now() - 180 * 24 * 3600e3).toISOString().slice(0, 19);
 
-  const [calls, latest, crashes, weather, bart, fires, cams, router, calls24] = await Promise.all([
+  const [calls, latest, crashes, weather, bart, fires, cams, router, calls24, lights, traffic] = await Promise.all([
     timed(() => json(`https://data.sf.gov/resource/gnap-fj3t.json?$select=count(*)&$where=${encodeURIComponent(`received_datetime > '${since}' AND ${VIOLENT}`)}`)),
     timed(() => json(`https://data.sf.gov/resource/gnap-fj3t.json?$select=received_datetime,call_type_final_desc,intersection_name,data_as_of&$where=${encodeURIComponent(`intersection_point IS NOT NULL AND received_datetime > '${since7}' AND ${VIOLENT}`)}&$order=received_datetime DESC&$limit=6`)),
     timed(() => json(`https://data.sf.gov/resource/ubvf-ztfx.json?$select=max(collision_datetime) as last,max(data_as_of) as asof`)),
@@ -50,6 +53,13 @@ export async function GET() {
     }),
     // Every located violent call in the last 24 h: feeds anomaly detection and alert corroboration.
     timed(() => json(`https://data.sf.gov/resource/gnap-fj3t.json?$select=received_datetime,call_type_final_desc,intersection_name,intersection_point&$where=${encodeURIComponent(`intersection_point IS NOT NULL AND received_datetime > '${since}' AND ${VIOLENT}`)}&$order=received_datetime DESC&$limit=400`)),
+    // Open 311 streetlight outages (burnt out, flickering, dim, knocked down) from the last 6 months.
+    timed(() => json(`https://data.sf.gov/resource/vw6y-z8j6.json?$select=service_request_id,requested_datetime,service_subtype,address,lat,long&$where=${encodeURIComponent(`${LIGHT_OUT} AND requested_datetime > '${since180}'`)}&$order=requested_datetime DESC&$limit=500`)),
+    timed(async () => {
+      const r = await trafficIncidents();
+      if (!r.ok) throw new Error("no traffic");
+      return r;
+    }),
   ]);
 
   const fmtTime = (iso?: string) => (iso ? new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Los_Angeles" }) : undefined);
@@ -63,6 +73,17 @@ export async function GET() {
     .map((d) => d.cctv)
     .filter((c) => c.inService === "true" && +c.location.latitude > 37.7 && +c.location.latitude < 37.83 && +c.location.longitude > -122.52 && +c.location.longitude < -122.35);
 
+  type Light = { service_request_id: string; requested_datetime: string; service_subtype: string; address: string; lat: string; long: string };
+  const lightList = ((lights.v as Light[] | undefined) ?? []).map((l) => ({
+    id: l.service_request_id,
+    lat: +l.lat,
+    lng: +l.long,
+    addr: l.address.replace(/, SAN FRANCISCO.*$/i, "").replace(/^INTERSECTION /i, "").toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()),
+    since: Date.parse(l.requested_datetime + "-07:00"),
+    kind: /flicker/i.test(l.service_subtype) ? "Flickering" : /dim/i.test(l.service_subtype) ? "Dim" : /knock/i.test(l.service_subtype) ? "Pole knocked down" : "Out",
+  }));
+  const tv = traffic.v;
+  const tCount = (k: string) => tv?.incidents.filter((i) => i.kind === k).length ?? 0;
   const feeds: Feed[] = [
     {
       id: "dispatch",
@@ -121,6 +142,24 @@ export async function GET() {
       detail: fv ? `${fv.total.toLocaleString()} detections across the US today` : "",
     },
     {
+      id: "traffic",
+      name: "Live traffic",
+      provider: "TomTom",
+      ok: traffic.ok,
+      ms: tv?.ms ?? traffic.ms,
+      value: tv ? `${tv.incidents.length} incidents: ${tCount("accident")} accidents, ${tv.incidents.filter((i) => i.full).length} road closures` : "unavailable",
+      detail: "Live speeds set drive times; car and moped routes skip closed roads",
+    },
+    {
+      id: "lights",
+      name: "Streetlight outages",
+      provider: "DataSF · SF 311",
+      ok: lights.ok,
+      ms: lights.ms,
+      value: lights.ok ? `${lightList.length} streetlights out right now` : "unavailable",
+      detail: "After sunset, walking and biking routes steer around dark blocks",
+    },
+    {
       id: "router",
       name: "Routing engine",
       provider: "Valhalla · OpenStreetMap",
@@ -150,6 +189,7 @@ export async function GET() {
     feeds,
     recentCalls: (lv ?? []).map((c) => ({ t: fmtTime(c.received_datetime), type: c.call_type_final_desc, where: c.intersection_name.replace(/\\+/g, "&") })),
     cameras: liveCams.slice(0, 8).map((c) => ({ name: c.location.locationName.replace(/^TV\d+ -- /, ""), img: c.imageData.static.currentImageURL, lat: +c.location.latitude, lng: +c.location.longitude })),
+    lights: lightList,
     weather: wv ? { isDay: !!wv.current.is_day, sunset: wv.daily.sunset[0], rain: wv.current.precipitation } : null,
     calls24: ((calls24.v as { received_datetime: string; call_type_final_desc: string; intersection_name: string; intersection_point: { coordinates: [number, number] } }[] | undefined) ?? []).map((c) => ({
       ts: Date.parse(c.received_datetime + "-07:00"),

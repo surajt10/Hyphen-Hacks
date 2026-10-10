@@ -3009,3 +3009,111 @@ button {
 .hot.forecast-list button {
   grid-template-columns: 26px 1fr 56px;
 }
+
+/* ---------- v6: 3D, traffic, skyline ---------- */
+.layers-pop {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+}
+.lp-row {
+  flex-wrap: wrap;
+}
+.icon-btn.td-btn {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-family: var(--font-sans);
+}
+.alert p.a-tri {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 100px;
+  padding: 6px 14px;
+  margin: 0 auto 6px;
+}
+.eng-tools {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.eng-tool {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 12px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.eng-tool svg {
+  color: var(--accent);
+}
+.eng-tool:hover {
+  background: var(--surface-2);
+}
+.eng-tool.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+/* Incident replay: center the card over the map when the "How it works" panel is open. */
+@media (min-width: 761px) {
+  .view-engine .rp-card {
+    left: calc((100vw - min(500px, 44vw)) / 2);
+    width: min(620px, calc(100vw - min(500px, 44vw) - 24px));
+  }
+}
+@media (max-width: 760px) {
+  .view-engine .rp-card {
+    bottom: calc(52vh + 10px);
+  }
+}
+/* Command center: hide the regular app chrome; the ops overlay draws its own. */
+.commanding .topbar,
+.commanding .rail,
+.commanding .topright,
+.commanding .engine,
+.commanding .layers,
+.commanding .fab-col,
+.commanding .side,
+.commanding .chips,
+.commanding .maplibregl-ctrl-bottom-right,
+.commanding .maplibregl-ctrl-bottom-left,
+.commanding .dir,
+.commanding .placecard,
+.commanding .engine-title,
+.commanding .pill,
+.commanding .rp-card {
+  display: none !important;
+}
+/* Streetlight out (SF 311), counted after sunset */
+.ws-dark {
+  fill: #3c4043;
+  stroke: #fdd663;
+  stroke-width: 1.6;
+}
+.wt.dark {
+  background: color-mix(in srgb, #8a6d00 14%, transparent);
+  color: #8a6d00;
+}
+:root[data-theme="dark"] .wt.dark {
+  background: rgba(253, 214, 99, 0.12);
+  color: #fdd663;
+}
+.contrib.dark {
+  border-left-color: #fdd663;
+}
+/* Phones: the replay card sits where the zoom buttons are. */
+@media (max-width: 760px) {
+  .app:has(.rp-card) .maplibregl-ctrl-bottom-right,
+  .app:has(.rp-card) .fab-col {
+    display: none;
+  }
+}

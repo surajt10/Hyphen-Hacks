@@ -1,0 +1,1487 @@
+/* NorthStar Command: the city operations overlay (components/Command.tsx).
+   Every class is prefixed cmd- so nothing here touches the rest of the app. Colours come from
+   the app's theme variables; the dark "control room" theme is the primary target.
+   Desktop (>= 1100px): panels frame a transparent map window. Narrower: a bottom sheet. */
+
+/* ---------- tokens ---------- */
+.cmd-root {
+  --cmd-left: clamp(280px, 24vw, 340px);
+  --cmd-right: clamp(300px, 25.5vw, 360px);
+  --cmd-panel: color-mix(in srgb, var(--surface) 94%, transparent);
+  --cmd-raise: color-mix(in srgb, var(--text) 5%, transparent);
+  --cmd-line: var(--border);
+  --cmd-hair: color-mix(in srgb, var(--border) 70%, transparent);
+  --cmd-blur: blur(14px) saturate(1.1);
+  --cmd-mono: var(--font-mono), ui-monospace, Menlo, monospace;
+  /* event kinds: always paired with an icon and a text label, never colour alone */
+  --cmd-sound: #d93025;
+  --cmd-report: #4f6d9a;
+  --cmd-anomaly: #c45a1a;
+  --cmd-traffic: #9a7400;
+  --cmd-call: #7b7f86;
+  --cmd-sensor: #188038;
+  --cmd-cam: var(--accent);
+  --cmd-gold: #b06d00; /* constellation lines on the map */
+  --cmd-forecast: #f29900; /* forecast hexagons on the map */
+  --cmd-live: #228a56;
+  --cmd-crit: #c8372c;
+  --cmd-bar: color-mix(in srgb, var(--text-3) 42%, transparent);
+}
+.cmd-root.cmd-dark {
+  --cmd-panel: rgba(12, 14, 16, 0.86);
+  --cmd-raise: rgba(255, 255, 255, 0.045);
+  --cmd-hair: rgba(255, 255, 255, 0.06);
+  --cmd-sound: #ff5a4e;
+  --cmd-report: #86a5dc;
+  --cmd-anomaly: #fb9d59;
+  --cmd-traffic: #f2cf3b;
+  --cmd-call: #9da1a8;
+  --cmd-sensor: #2fbf71;
+  --cmd-cam: #5aa9ff;
+  --cmd-gold: #ffd27a;
+  --cmd-bar: rgba(160, 170, 186, 0.32);
+}
+.cmd-t-sound {
+  --c: var(--cmd-sound);
+}
+.cmd-t-report {
+  --c: var(--cmd-report);
+}
+.cmd-t-anomaly {
+  --c: var(--cmd-anomaly);
+}
+.cmd-t-traffic {
+  --c: var(--cmd-traffic);
+}
+.cmd-t-call {
+  --c: var(--cmd-call);
+}
+.cmd-t-sensor {
+  --c: var(--cmd-sensor);
+}
+.cmd-t-cam {
+  --c: var(--cmd-cam);
+}
+
+/* ---------- layout ---------- */
+.cmd-root {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none; /* the map window in the middle stays draggable */
+  display: grid;
+  grid-template-columns: var(--cmd-left) minmax(0, 1fr) var(--cmd-right);
+  grid-template-rows: 64px auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "top top top"
+    "kpi kpi kpi"
+    "left map right"
+    "left bottom right";
+  gap: 10px 12px;
+  padding: 0 12px 12px;
+  color: var(--text);
+  font-family: var(--font-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+}
+.cmd-root button {
+  font: inherit;
+  color: inherit;
+}
+.cmd-root :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.cmd-sheet {
+  display: contents; /* desktop: its panels are placed straight onto the grid */
+}
+.cmd-col {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--cmd-line) transparent;
+}
+.cmd-left {
+  grid-area: left;
+}
+.cmd-right {
+  grid-area: right;
+}
+.cmd-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- panels ---------- */
+.cmd-panel {
+  position: relative;
+  flex: none;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--cmd-line);
+  background: var(--cmd-panel);
+  -webkit-backdrop-filter: var(--cmd-blur);
+  backdrop-filter: var(--cmd-blur);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+.cmd-dark .cmd-panel,
+.cmd-dark .cmd-kpi {
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.cmd-ph {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  margin: 0 0 10px;
+}
+.cmd-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+.cmd-eyebrow svg {
+  flex: none;
+  color: var(--accent-text);
+}
+.cmd-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--cmd-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+.cmd-fine {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+.cmd-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--cmd-hair);
+  background: var(--cmd-raise);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.cmd-empty svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-3);
+}
+.cmd-empty p {
+  margin: 0;
+}
+.cmd-pulse {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--cmd-live);
+  animation: cmd-glow 2s ease-out infinite;
+}
+.cmd-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--cmd-sensor);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cmd-sensor) 22%, transparent);
+}
+.cmd-dot.cmd-err {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 22%, transparent);
+}
+.cmd-dot.cmd-wait {
+  background: var(--text-3);
+  box-shadow: none;
+}
+
+/* ---------- top bar ---------- */
+.cmd-top {
+  grid-area: top;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 64px;
+  margin: 0 -12px;
+  padding: 0 18px 0 16px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border-bottom: 1px solid var(--cmd-line);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: var(--cmd-blur);
+  backdrop-filter: var(--cmd-blur);
+  pointer-events: auto;
+}
+.cmd-dark .cmd-top {
+  background: linear-gradient(180deg, rgba(8, 10, 12, 0.97), rgba(12, 14, 16, 0.9));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+.cmd-top::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent) 25%, var(--accent) 75%, transparent);
+  opacity: 0.55;
+}
+.cmd-stars {
+  position: absolute;
+  inset: 0;
+  opacity: 0.85;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, #000, #000 28%, transparent 72%);
+  mask-image: linear-gradient(90deg, #000, #000 28%, transparent 72%);
+}
+.cmd-brand,
+.cmd-status,
+.cmd-top-end {
+  position: relative;
+}
+.cmd-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.cmd-logo {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  color: #fff;
+  background: linear-gradient(150deg, #3b95ff, #0062ca);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 6px 18px rgba(0, 122, 252, 0.3);
+}
+.cmd-brand-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.cmd-title-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.cmd-title {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.cmd-sub {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.cmd-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 3px 7px 3px 6px;
+  border-radius: 4px;
+  background: var(--cmd-live);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  animation: cmd-glow 2.4s ease-out infinite;
+}
+.cmd-live-dot {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+.cmd-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+  animation: cmd-ping 1.8s ease-out infinite;
+}
+.cmd-status {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.cmd-status li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.cmd-status svg {
+  color: var(--text-3);
+}
+.cmd-top-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+}
+.cmd-clock {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  line-height: 1.1;
+}
+.cmd-clock-date {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.cmd-clock-time {
+  font-family: var(--cmd-mono);
+  font-size: 17px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.cmd-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 100px;
+  border: 1px solid var(--cmd-line);
+  background: var(--surface-2);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+.cmd-exit:hover {
+  background: var(--surface-3);
+  border-color: color-mix(in srgb, var(--text) 25%, var(--cmd-line));
+}
+.cmd-exit kbd {
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--cmd-line);
+  font-family: var(--cmd-mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+/* ---------- KPI strip ---------- */
+.cmd-kpis {
+  grid-area: kpi;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  pointer-events: auto;
+}
+.cmd-kpi {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px 10px 15px;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--cmd-line);
+  background: var(--cmd-panel);
+  -webkit-backdrop-filter: var(--cmd-blur);
+  backdrop-filter: var(--cmd-blur);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+.cmd-kpi::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--c);
+  opacity: 0.35;
+}
+.cmd-kpi.cmd-hot {
+  border-color: color-mix(in srgb, var(--c) 45%, var(--cmd-line));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--c) 13%, transparent), transparent 75%),
+    var(--cmd-panel);
+}
+.cmd-kpi.cmd-hot::before {
+  opacity: 1;
+}
+button.cmd-kpi {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+button.cmd-kpi:hover {
+  border-color: color-mix(in srgb, var(--c) 65%, var(--cmd-line));
+}
+.cmd-kpi-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.cmd-kpi-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmd-kpi-ico {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--c);
+  background: color-mix(in srgb, var(--c) 14%, transparent);
+}
+.cmd-kpi-num {
+  font-family: var(--cmd-mono);
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.cmd-kpi-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cmd-kpi-go {
+  position: absolute;
+  top: 11px;
+  right: 11px;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+button.cmd-kpi:hover .cmd-kpi-go,
+button.cmd-kpi:focus-visible .cmd-kpi-go {
+  opacity: 1;
+}
+
+/* ---------- camera wall ---------- */
+.cmd-cams {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.cmd-cam {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: #07090b;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  isolation: isolate;
+}
+.cmd-cam img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+.cmd-cam img.cmd-on {
+  opacity: 1;
+}
+.cmd-cam:hover img {
+  transform: scale(1.05);
+}
+.cmd-cam::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.5), transparent 32%, transparent 52%, rgba(0, 0, 0, 0.75)),
+    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 3px);
+}
+.cmd-cam:hover {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.cmd-cam-top {
+  position: absolute;
+  z-index: 2;
+  top: 5px;
+  left: 7px;
+  right: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--cmd-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.92);
+}
+.cmd-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cmd-rec::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff3b30;
+  box-shadow: 0 0 6px rgba(255, 59, 48, 0.9);
+  animation: cmd-blink 1.2s ease-in-out infinite;
+}
+.cmd-cam-name {
+  position: absolute;
+  z-index: 2;
+  left: 7px;
+  right: 7px;
+  bottom: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-align: left;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.cmd-cam-lost {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--cmd-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  background: repeating-linear-gradient(45deg, #0c0e10 0 6px, #111417 6px 12px);
+}
+.cmd-cam-skel {
+  cursor: default;
+  box-shadow: none;
+  background: linear-gradient(100deg, var(--surface-2) 30%, var(--surface-3) 50%, var(--surface-2) 70%) 0 0 / 200% 100%;
+  animation: cmd-shimmer 1.4s linear infinite;
+}
+.cmd-cam-skel::after {
+  display: none;
+}
+
+/* ---------- sensor grid + data feeds ---------- */
+.cmd-sensor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.cmd-sensor > div {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--cmd-hair);
+  background: var(--cmd-raise);
+}
+.cmd-num {
+  font-family: var(--cmd-mono);
+  font-size: 19px;
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--text);
+}
+.cmd-lbl {
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--text-2);
+}
+.cmd-feeds {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cmd-feeds li {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.cmd-feeds li + li {
+  border-top: 1px solid var(--cmd-hair);
+}
+.cmd-feed-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmd-feed-ms {
+  font-family: var(--cmd-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ---------- live event feed ---------- */
+.cmd-feed {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 260px;
+  padding-bottom: 4px;
+}
+.cmd-feed .cmd-ph {
+  flex: none;
+}
+.cmd-feed-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 -8px;
+  padding: 0 0 10px;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--cmd-line) transparent;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+}
+.cmd-ev {
+  animation: cmd-in 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.cmd-ev + .cmd-ev {
+  box-shadow: inset 0 1px 0 var(--cmd-hair);
+}
+.cmd-ev-btn {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "title time"
+    "sub sub";
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  width: 100%;
+  padding: 8px 10px 8px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.cmd-ev-btn:hover {
+  background: var(--cmd-raise);
+}
+.cmd-ev-btn:focus-visible {
+  outline-offset: -2px;
+}
+.cmd-ev-bar {
+  position: absolute;
+  left: 6px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--c);
+}
+.cmd-ev-sub {
+  grid-area: sub;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cmd-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--c) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 38%, transparent);
+  font-family: var(--cmd-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text);
+}
+.cmd-chip svg {
+  flex: none;
+  color: var(--c);
+}
+.cmd-ev-title {
+  grid-area: title;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.cmd-t-call .cmd-ev-title {
+  font-weight: 400;
+}
+.cmd-ev-time {
+  grid-area: time;
+  white-space: nowrap;
+  font-family: var(--cmd-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.cmd-ev-place {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.cmd-chip-crit {
+  background: var(--cmd-crit);
+  box-shadow: none;
+  color: #fff;
+}
+.cmd-chip-crit svg {
+  color: #fff;
+}
+.cmd-ev-severe .cmd-ev-btn {
+  background: color-mix(in srgb, var(--cmd-sound) 8%, transparent);
+}
+.cmd-ev-severe .cmd-ev-btn:hover {
+  background: color-mix(in srgb, var(--cmd-sound) 14%, transparent);
+}
+.cmd-fresh .cmd-ev-btn {
+  animation: cmd-fresh 2.6s ease-out;
+}
+
+/* ---------- constellations + next hour ---------- */
+.cmd-list {
+  display: grid;
+  gap: 1px;
+  margin: 0 -6px;
+  padding: 0;
+  list-style: none;
+}
+.cmd-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.cmd-row:hover {
+  background: var(--cmd-raise);
+}
+.cmd-row:disabled {
+  cursor: default;
+}
+.cmd-row:focus-visible {
+  outline-offset: -2px;
+}
+.cmd-row-main {
+  display: grid;
+  min-width: 0;
+}
+.cmd-row-main strong,
+.cmd-row-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmd-row-main strong {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+.cmd-row-main span {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.cmd-go {
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.cmd-row:hover .cmd-go,
+.cmd-row:focus-visible .cmd-go {
+  opacity: 1;
+}
+.cmd-const-n {
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  height: 30px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-family: var(--cmd-mono);
+  font-size: 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--cmd-gold) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cmd-gold) 42%, transparent);
+}
+.cmd-rank {
+  width: 20px;
+  font-family: var(--cmd-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cmd-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--cmd-mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.cmd-delta::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--cmd-forecast);
+}
+.cmd-next {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.cmd-next strong {
+  font-family: var(--cmd-mono);
+  font-weight: 500;
+}
+.cmd-trend {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+}
+.cmd-next-down .cmd-trend {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+}
+.cmd-next-flat .cmd-trend {
+  color: var(--text-2);
+  background: var(--cmd-raise);
+}
+
+/* ---------- bottom strip: calls by hour + engine ticker ---------- */
+.cmd-bottom {
+  grid-area: bottom;
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px 8px;
+}
+.cmd-bottom .cmd-ph {
+  margin: 0 0 6px;
+}
+.cmd-chart-stats {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cmd-chart-stats b {
+  margin-left: 5px;
+  font-family: var(--cmd-mono);
+  font-weight: 500;
+  color: var(--text);
+}
+.cmd-chart {
+  position: relative;
+  border-radius: 4px;
+}
+.cmd-chart:focus-visible {
+  outline-offset: 4px;
+}
+.cmd-bars {
+  display: flex;
+  align-items: flex-end;
+  height: 40px;
+  border-bottom: 1px solid var(--cmd-line);
+}
+.cmd-bar {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  align-items: flex-end;
+  justify-content: center;
+  height: 100%;
+}
+.cmd-bar-fill {
+  width: min(calc(100% - 2px), 24px);
+  border-radius: 4px 4px 0 0;
+  background: var(--cmd-bar);
+  transform-origin: bottom;
+  transition:
+    height 0.4s ease,
+    background-color 0.15s;
+  animation: cmd-grow 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.cmd-bar.cmd-sel .cmd-bar-fill {
+  background: var(--text-2);
+}
+.cmd-bar.cmd-now .cmd-bar-fill {
+  background: var(--accent);
+}
+.cmd-bar.cmd-now.cmd-sel .cmd-bar-fill {
+  background: var(--accent-text);
+}
+.cmd-axis {
+  position: relative;
+  height: 13px;
+  margin-top: 3px;
+  font-family: var(--cmd-mono);
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+.cmd-axis span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+.cmd-axis .cmd-axis-now {
+  left: auto;
+  right: 0;
+  transform: none;
+  color: var(--accent-text);
+}
+.cmd-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 3;
+  display: grid;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--cmd-line);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.cmd-tip-l {
+  transform: translateX(-14%);
+}
+.cmd-tip-r {
+  transform: translateX(-86%);
+}
+.cmd-tip strong {
+  font-family: var(--cmd-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+.cmd-tip span {
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+.cmd-chart-empty {
+  position: absolute;
+  inset: 0 0 16px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+  pointer-events: none;
+}
+.cmd-ticker {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  height: 27px;
+  padding-top: 7px;
+  border-top: 1px solid var(--cmd-hair);
+}
+.cmd-ticker-lbl {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.cmd-ticker-lbl svg {
+  color: var(--accent-text);
+}
+.cmd-ticker-view {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 3px;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 20px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 20px, #000 calc(100% - 28px), transparent);
+}
+.cmd-ticker-view:focus-visible {
+  outline-offset: 0;
+}
+.cmd-ticker-track {
+  display: flex;
+  width: max-content;
+  animation: cmd-marquee var(--cmd-dur, 40s) linear infinite;
+}
+.cmd-ticker:hover .cmd-ticker-track,
+.cmd-ticker-view:focus-visible .cmd-ticker-track {
+  animation-play-state: paused;
+}
+.cmd-ticker-run {
+  display: flex;
+  gap: 30px;
+  padding-right: 30px;
+}
+.cmd-tick {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  font-family: var(--cmd-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.cmd-tick::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--k, var(--text-3));
+}
+.cmd-tick time {
+  color: var(--text-3);
+}
+.cmd-tick-live {
+  --k: var(--cmd-sound);
+}
+.cmd-tick-route {
+  --k: var(--accent);
+}
+.cmd-tick-pick {
+  --k: var(--cmd-gold);
+}
+.cmd-tick-data {
+  --k: var(--cmd-sensor);
+}
+.cmd-ticker-empty {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* ---------- viewfinder around the map window (decorative) ---------- */
+.cmd-frame {
+  grid-area: map;
+  position: relative;
+  margin: 2px;
+  pointer-events: none;
+}
+.cmd-corner {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border: 0 solid color-mix(in srgb, var(--accent) 80%, transparent);
+}
+.cmd-dark .cmd-corner {
+  filter: drop-shadow(0 0 4px rgba(0, 122, 252, 0.55));
+}
+.cmd-tl {
+  top: 0;
+  left: 0;
+  border-top-width: 2px;
+  border-left-width: 2px;
+  border-top-left-radius: 6px;
+}
+.cmd-tr {
+  top: 0;
+  right: 0;
+  border-top-width: 2px;
+  border-right-width: 2px;
+  border-top-right-radius: 6px;
+}
+.cmd-bl {
+  bottom: 0;
+  left: 0;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+  border-bottom-left-radius: 6px;
+}
+.cmd-br {
+  bottom: 0;
+  right: 0;
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  border-bottom-right-radius: 6px;
+}
+.cmd-frame::before,
+.cmd-frame::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: 1px;
+  height: 8px;
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.cmd-frame::before {
+  top: 0;
+}
+.cmd-frame::after {
+  bottom: 0;
+}
+.cmd-frame-tag {
+  position: absolute;
+  top: 8px;
+  left: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--cmd-hair);
+  background: var(--cmd-panel);
+  font-family: var(--cmd-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.cmd-frame-tag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cmd-live);
+  animation: cmd-blink 2s ease-in-out infinite;
+}
+
+/* ---------- motion ---------- */
+@keyframes cmd-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@keyframes cmd-fresh {
+  0%,
+  25% {
+    background-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+}
+@keyframes cmd-glow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 138, 86, 0.55);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px rgba(34, 138, 86, 0);
+  }
+}
+@keyframes cmd-ping {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+@keyframes cmd-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+@keyframes cmd-grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+@keyframes cmd-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+@keyframes cmd-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cmd-root *,
+  .cmd-root *::before,
+  .cmd-root *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .cmd-ticker-view {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
+/* ---------- smaller screens ---------- */
+@media (max-width: 1279.98px) {
+  .cmd-status {
+    display: none;
+  }
+}
+@media (min-width: 1100px) and (max-height: 800px) {
+  .cmd-kpi {
+    padding-block: 8px;
+  }
+  .cmd-kpi-num {
+    font-size: 22px;
+  }
+  .cmd-kpi-note,
+  .cmd-fine {
+    display: none;
+  }
+  .cmd-cams > :nth-child(n + 5) {
+    display: none;
+  }
+  .cmd-feed {
+    min-height: 220px;
+  }
+}
+
+/* Below 1100px everything stacks into a scrollable bottom sheet; the map shows above it. */
+@media (max-width: 1099.98px) {
+  .cmd-root {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 0;
+  }
+  .cmd-top {
+    flex: none;
+    height: auto;
+    min-height: 56px;
+    margin: 0;
+    padding: env(safe-area-inset-top, 0px) 14px 0;
+    gap: 12px;
+  }
+  .cmd-frame {
+    display: none;
+  }
+  .cmd-sheet {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: 55vh;
+    height: 55dvh;
+    margin-top: auto;
+    padding: 20px 12px calc(16px + env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-top: 1px solid var(--cmd-line);
+    border-radius: 18px 18px 0 0;
+    background: var(--bg);
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.28);
+    pointer-events: auto;
+  }
+  .cmd-sheet::before {
+    content: "";
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    width: 36px;
+    height: 4px;
+    margin-left: -18px;
+    border-radius: 2px;
+    background: var(--cmd-line);
+  }
+  .cmd-col {
+    display: contents;
+  }
+  .cmd-panel,
+  .cmd-kpi {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--surface);
+  }
+  .cmd-kpis {
+    order: 1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .cmd-p-feed {
+    order: 2;
+    flex: none;
+    min-height: 0;
+  }
+  .cmd-p-feed .cmd-feed-list {
+    flex: none;
+    max-height: 46vh;
+  }
+  .cmd-p-cams {
+    order: 3;
+  }
+  .cmd-bottom {
+    order: 4;
+  }
+  .cmd-bottom .cmd-ph {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .cmd-p-next {
+    order: 5;
+  }
+  .cmd-p-const {
+    order: 6;
+  }
+  .cmd-p-sensor {
+    order: 7;
+  }
+  .cmd-p-feeds {
+    order: 8;
+  }
+}
+@media (max-width: 640px) {
+  .cmd-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cmd-sub,
+  .cmd-clock-date,
+  .cmd-exit kbd {
+    display: none;
+  }
+  .cmd-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+  }
+  .cmd-title {
+    font-size: 14.5px;
+  }
+  .cmd-clock-time {
+    font-size: 14px;
+  }
+  .cmd-top-end {
+    gap: 10px;
+  }
+}
+@media (max-width: 420px) {
+  .cmd-top {
+    gap: 8px;
+    padding-inline: 10px;
+  }
+  .cmd-brand {
+    gap: 8px;
+  }
+  .cmd-exit {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+  .cmd-exit-text {
+    display: none;
+  }
+}

@@ -10,7 +10,8 @@ const YAMNET_URL = "https://tfhub.dev/google/tfjs-model/yamnet/tfjs/1";
 const GUN = [421, 422, 423, 424, 425]; // gunshot, machine gun, fusillade, artillery, cap gun
 const FIREWORKS = [426, 427]; // fireworks, firecracker
 
-export type Detection = { confidence: number; label: "gunshot" | "loud-bang"; at: number };
+// onset: when the sound arrived (epoch ms, sub-millisecond), used for triangulation.
+export type Detection = { confidence: number; label: "gunshot" | "loud-bang"; at: number; onset?: number };
 
 let modelPromise: Promise<any> | null = null;
 
@@ -91,8 +92,17 @@ export class SoundWatcher {
       this.background = this.background * 0.98 + Math.min(rms, 0.2) * 0.02;
       if (impulse && now > this.cooldownUntil) {
         this.cooldownUntil = now + 3000;
+        // Exact arrival time: the first sample above half the peak, mapped from audio time to
+        // the wall clock (accurate to a few ms; the server syncs clocks between phones).
+        let idx = 0;
+        while (idx < data.length && Math.abs(data[idx]) < peak * 0.5) idx++;
+        const ctx = this.ctx!;
+        const onsetCtx = ctx.currentTime - (data.length - idx) / rate;
+        const ts = ctx.getOutputTimestamp?.();
+        const perf = ts?.performanceTime !== undefined && ts.contextTime !== undefined ? ts.performanceTime + (onsetCtx - ts.contextTime) * 1000 : now - ((data.length - idx) / rate) * 1000;
+        const onset = performance.timeOrigin + perf;
         // Let ~300 ms of the sound arrive, then classify the last second of audio.
-        setTimeout(() => this.classify(rate).then((d) => d && onDetect(d)), 300);
+        setTimeout(() => this.classify(rate).then((d) => d && onDetect({ ...d, onset })), 300);
       }
     };
   }

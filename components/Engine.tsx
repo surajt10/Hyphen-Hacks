@@ -4,7 +4,7 @@
 // Click any spot on the map to see exactly how its risk was calculated.
 import { useEffect, useMemo, useState } from "react";
 import { cellToBoundary, cellToLatLng } from "h3-js";
-import { ArrowLeft, Crosshair, Radio, Activity, Satellite, Camera, Database, Siren, Sparkles, TrendingUp, TrendingDown, ShieldAlert, AudioWaveform } from "lucide-react";
+import { ArrowLeft, Crosshair, Radio, Activity, Satellite, Camera, Database, Siren, Sparkles, TrendingUp, TrendingDown, ShieldAlert, AudioWaveform, LayoutDashboard, History, ChartColumnBig } from "lucide-react";
 import { MODES, MODE_MULT, TYPE_WEIGHT, contribution, type CellRisk, type Ev, type LiveZone, type Mode, LIVE_SCORE } from "@/lib/scoring";
 import { EVENT_LABEL } from "@/lib/i18n";
 import { fmtDate, fmtHour, placeOf } from "@/lib/format";
@@ -19,6 +19,7 @@ export type Sources = {
   cameras: { name: string; img: string; lat: number; lng: number }[];
   weather: { isDay: boolean; sunset: string; rain?: number } | null;
   calls24?: Call[];
+  lights?: { id: string; lat: number; lng: number; addr: string; since: number; kind: string }[];
 };
 
 type Props = {
@@ -45,6 +46,10 @@ type Props = {
   anomalies: Anomaly[];
   sensors: { phones: number; cells: { cell: string; n: number }[] };
   corroborated: Map<string, Call>;
+  onCommand?: () => void;
+  onReplay?: () => void;
+  skyline?: boolean;
+  onSkyline?: () => void;
 };
 
 const LABEL = EVENT_LABEL.en;
@@ -194,6 +199,20 @@ export default function Engine(p: Props) {
             <p className="eng-hint">
               <Crosshair size={14} /> Click anywhere on the map to see how its risk is calculated.
             </p>
+            <div className="eng-tools">
+              <button className="eng-tool" onClick={p.onCommand}>
+                <LayoutDashboard size={16} />
+                <span>Command center</span>
+              </button>
+              <button className="eng-tool" onClick={p.onReplay}>
+                <History size={16} />
+                <span>Replay 7 days</span>
+              </button>
+              <button className={`eng-tool ${p.skyline ? "on" : ""}`} aria-pressed={!!p.skyline} onClick={p.onSkyline}>
+                <ChartColumnBig size={16} />
+                <span>3D skyline</span>
+              </button>
+            </div>
 
             <div className="tiles">
               <Tile label="Violent incidents, last 7 days" value={stats.calls7} note={stats.callsPrev7 ? `${trend >= 0 ? "▲" : "▼"} ${Math.abs(trend)}% vs prior week` : undefined} />
@@ -512,7 +531,7 @@ function CellView(p: Props & { cell: string; scores: number[]; minute: number })
           </li>
         )}
         {rows.slice(0, 40).map((r, i) => (
-          <li key={i} className={`contrib ${r.e.t.startsWith("crash") ? "crash" : "crime"}`} style={{ animationDelay: `${(i + (zone ? 1 : 0)) * 70}ms` }}>
+          <li key={i} className={`contrib ${r.e.t.startsWith("crash") ? "crash" : r.e.t === "dark" ? "dark" : "crime"}`} style={{ animationDelay: `${(i + (zone ? 1 : 0)) * 70}ms` }}>
             <div className="c-head">
               <span className="c-type">{LABEL[r.e.t]}</span>
               <span className="mono c-val">+{fmt(r.value)}</span>
@@ -618,6 +637,11 @@ function Intel(p: Props) {
               <strong>
                 {z.level === "confirmed" ? "Confirmed" : "Possible"} gunshot · {z.count} {z.count === 1 ? "phone" : "phones"} · {new Date(z.ts).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
               </strong>
+              {z.origin && (
+                <span>
+                  Triangulated: arrival times {z.spreadMs} ms apart put the origin within ±{Math.round((z.radiusM ?? 0) * 3.28)} ft{z.demo ? " (demo phones)" : ""}
+                </span>
+              )}
               <span>{c ? `Corroborated by SFPD dispatch: "${c.type.toLowerCase()}" at ${c.where.toLowerCase()}` : "Watching SFPD dispatch for a matching shots-fired call (0.4 mi, 20 min)…"}</span>
               {cam && cam.d < 3 && (
                 <span>
@@ -627,7 +651,7 @@ function Intel(p: Props) {
             </div>
           );
         })}
-        <p className="muted small-text">Phones report only area-level coverage; no audio, identities or exact positions are stored.</p>
+        <p className="muted small-text">Listening phones report only area-level coverage. A phone that hears a bang shares its position for that alert, shown to others rounded to a ~0.01 sq mi cell. No audio or identities are stored.</p>
       </section>
 
       <section>

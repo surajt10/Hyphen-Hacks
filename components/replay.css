@@ -1,0 +1,435 @@
+/* Incident replay ("time machine") card. Every class is prefixed rp- to stay clear of globals.css.
+   Colors come from the theme variables in globals.css; sizes are in em so "Large text" scales them. */
+.rp-card {
+  --rp-red: #ff4d4d;
+  --rp-amber: #f5a524;
+  --rp-hot: #ff6b6b;
+  --rp-thumb: 16px;
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(620px, calc(100vw - 24px));
+  z-index: 9;
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  line-height: 1.35;
+  animation: rp-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.rp-card,
+.rp-card *,
+.rp-card *::before,
+.rp-card *::after {
+  box-sizing: border-box;
+}
+@keyframes rp-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ---------- header ---------- */
+.rp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.rp-live {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.rp-live.rp-on {
+  background: var(--rp-red);
+  animation: rp-beat 1.6s ease-out infinite;
+}
+@keyframes rp-beat {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 77, 77, 0.55);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px rgba(255, 77, 77, 0);
+  }
+}
+.rp-title {
+  margin: 0;
+  flex: none;
+  font-size: 0.93em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.rp-sub {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 0.86em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rp-x {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: -6px -6px -6px 0;
+  border: 0;
+  border-radius: 100px;
+  background: transparent;
+  color: var(--text-2);
+}
+.rp-x:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* ---------- play / time / counts / speed ---------- */
+.rp-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.rp-play {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 100px;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--shadow);
+}
+.rp-play:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+.rp-play:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rp-now {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.rp-time {
+  font-family: var(--font-mono), ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.36em;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rp-counts {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 7px;
+  color: var(--text-2);
+  font-size: 0.9em;
+}
+.rp-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.rp-count + .rp-count::before {
+  content: "·";
+  margin-right: 2px;
+  color: var(--text-3);
+}
+.rp-num {
+  font-family: var(--font-mono), ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  color: var(--text);
+}
+.rp-dot {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.rp-dot-crime {
+  background: var(--rp-red);
+}
+.rp-dot-crash {
+  background: var(--rp-amber);
+}
+.rp-dot-shot {
+  width: 9px;
+  height: 9px;
+  margin: 0 2px;
+  background: var(--rp-hot);
+  box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 3px var(--rp-red);
+}
+
+/* Segmented pills (speed and filter). */
+.rp-seg {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 100px;
+  background: var(--surface-2);
+}
+.rp-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 100px;
+  background: none;
+  color: var(--text-2);
+  font-size: 0.86em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.rp-seg button:hover {
+  color: var(--text);
+}
+.rp-seg button.rp-on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.rp-card[data-rp-theme="dark"] .rp-seg button.rp-on {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
+.rp-card[data-rp-theme="dark"] .rp-seg button.rp-on .rp-num {
+  color: inherit;
+}
+.rp-speed button {
+  gap: 2px;
+}
+
+/* ---------- sparkline + slider + day labels (aligned to the slider thumb's travel) ---------- */
+.rp-track {
+  display: grid;
+  gap: 2px;
+}
+.rp-spark {
+  height: 36px;
+  margin: 0 calc(var(--rp-thumb) / 2);
+  cursor: pointer;
+  touch-action: none;
+}
+.rp-spark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.rp-bar-crime {
+  fill: var(--rp-red);
+}
+.rp-bar-crash {
+  fill: var(--rp-amber);
+}
+.rp-past {
+  opacity: 0.5;
+}
+.rp-next {
+  opacity: 0.22;
+}
+.rp-lens {
+  fill: var(--accent);
+  opacity: 0.16;
+}
+.rp-head-line {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.rp-daytick {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.rp-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.rp-slider:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rp-slider:focus-visible {
+  outline: none;
+}
+.rp-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 100px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 calc(var(--rp-thumb) / 2 + (100% - var(--rp-thumb)) * var(--rp-f, 0)),
+    var(--surface-3) 0
+  );
+}
+.rp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--rp-thumb);
+  height: var(--rp-thumb);
+  margin-top: calc((4px - var(--rp-thumb)) / 2);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.rp-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 100px;
+  background: var(--surface-3);
+}
+.rp-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 100px;
+  background: var(--accent);
+}
+.rp-slider::-moz-range-thumb {
+  box-sizing: border-box;
+  width: var(--rp-thumb);
+  height: var(--rp-thumb);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.rp-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--accent);
+}
+.rp-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--accent);
+}
+
+.rp-days {
+  position: relative;
+  height: 14px;
+  margin: 0 calc(var(--rp-thumb) / 2);
+  color: var(--text-3);
+  font-family: var(--font-mono), ui-monospace, Menlo, monospace;
+  font-size: 0.75em;
+  line-height: 14px;
+}
+.rp-days span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* ---------- filter + busiest place ---------- */
+.rp-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.rp-busy {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 0.9em;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rp-busy b {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.rp-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- phones ---------- */
+@media (max-width: 560px) {
+  .rp-card {
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+  .rp-main {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .rp-now {
+    flex-basis: calc(100% - 56px);
+  }
+  .rp-speed {
+    margin-left: 56px;
+  }
+  .rp-time {
+    font-size: 1.2em;
+  }
+  /* Counts wrap here; the coloured dots separate them, so a wrapped line never starts with "·". */
+  .rp-counts {
+    column-gap: 12px;
+  }
+  .rp-count + .rp-count::before {
+    display: none;
+  }
+  .rp-days .rp-edge {
+    display: none;
+  }
+  .rp-foot {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .rp-busy {
+    flex-basis: 100%;
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rp-card,
+  .rp-live.rp-on {
+    animation: none;
+  }
+}

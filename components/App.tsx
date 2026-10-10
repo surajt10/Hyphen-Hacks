@@ -37,6 +37,9 @@ import {
   Ear,
   CircleDot,
   CornerUpRight,
+  ChartColumnBig,
+  TrafficCone,
+  LayoutDashboard,
 } from "lucide-react";
 import { MODES, type Mode, type Ev, type LiveZone, scoreCells, liveCells, routeRisk, percentile, cellCenter, contribution, LIVE_SCORE } from "@/lib/scoring";
 import { DICTS, EVENT_LABEL, LANGS, type Lang, type Key } from "@/lib/i18n";
@@ -48,7 +51,10 @@ import { CAT, CAT_UI, CHIP_ORDER, MODE_ICON } from "./icons";
 import { addPoiIcons, MAP_POI, POI_OF_TAG } from "./mapIcons";
 import { corroborate, detectAnomalies, findConstellations, forecastNextHour, type Call } from "@/lib/intel";
 import Galaxy from "./Galaxy";
+import Replay from "./Replay";
+import Command from "./Command";
 import { satellite } from "@/lib/sat";
+import type { TrafficIncident } from "@/lib/traffic";
 
 type Theme = "light" | "dark";
 type View = "nav" | "engine";
@@ -62,7 +68,7 @@ type Roads = { cameras: Camera[]; closures: { name: string; lng: number; lat: nu
 type Result = { safer: Scored; fastest: Scored; avoided: Avoided[]; passes: Avoided[]; timeline: { offset: number; risk: number }[]; cams: Camera[] };
 type ListId = "fav" | "want" | "saved";
 type ZoneInfo = { cell8: string; place: string; calls: number; crashes: number; topType: string; peak: string; last: string; rankPct: number; level: string; bestCell: string };
-type LayerState = { satellite: boolean; buildings: boolean; night: boolean; zones: boolean };
+type LayerState = { satellite: boolean; buildings: boolean; night: boolean; zones: boolean; traffic: boolean; skyline: boolean };
 
 // The Bay Area: SF has the richest data; nearby cities come from bay-events.json when present.
 const CITY = { center: [-122.4294, 37.7649] as [number, number], bbox: [-122.75, 37.15, -121.55, 38.35], data: ["/data/sf-events.json", "/data/bay-events.json"] };
@@ -74,8 +80,26 @@ const PALETTE = {
   light: { route: "#1a73e8", casing: "#1557b0", alt: "#aecbfa", altCasing: "#7ba3e8", zoneLo: "#b9bdf7", zoneHi: "#4f46e5", strokeLo: "#6870e8", strokeHi: "#2e2bb8", hex: "#1a56db", sel: "#202124", end: "#ea4335", me: "#1a73e8", bldg: "#d9dce3", label: "#2e2bb8", halo: "#ffffff" },
   dark: { route: "#3d8bff", casing: "#0b3d91", alt: "#4d5b73", altCasing: "#2a3343", zoneLo: "#3b4aa8", zoneHi: "#7c8dff", strokeLo: "#5b6fd6", strokeHi: "#a5b4ff", hex: "#007afc", sel: "#ffffff", end: "#ff5a4e", me: "#3d8bff", bldg: "#2a2f38", label: "#ffffff", halo: "#0e1012" },
 };
-const SOURCES = ["hex", "zones", "places", "routeAlt", "route", "avoid", "havens", "live", "liveLines", "sel", "selLinks", "selPts", "ends", "pin", "me", "constLines", "constPts", "forecast", "anomaly", "sensors"];
+const SOURCES = ["hex", "zones", "places", "routeAlt", "route", "avoid", "havens", "live", "liveLines", "sel", "selLinks", "selPts", "ends", "pin", "me", "constLines", "constPts", "forecast", "anomaly", "sensors", "trafficInc", "lights", "tri"];
 const OFFSETS = [0, 30, 60, 120, 180];
+// 3D: soft lit buildings (taller towers slightly tinted, like Google's 3D map), sky and haze.
+const H = ["coalesce", ["get", "render_height"], 12];
+const BLDG_3D = {
+  light: ["interpolate", ["linear"], H, 0, "#f1f2f5", 30, "#e9ebf0", 90, "#dfe5ee", 180, "#cfdbec"],
+  dark: ["interpolate", ["linear"], H, 0, "#2b3039", 40, "#323946", 150, "#3c4a63"],
+  sat: ["interpolate", ["linear"], H, 0, "#f4f1ea", 120, "#e6ebf2"],
+};
+const SKY = {
+  light: { "sky-color": "#a9cdf2", "horizon-color": "#eaf2fb", "fog-color": "#f4f6f9", "sky-horizon-blend": 0.6, "horizon-fog-blend": 0.7, "fog-ground-blend": 0.35, "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 12, 0] },
+  dark: { "sky-color": "#0a1222", "horizon-color": "#1a2538", "fog-color": "#0e1012", "sky-horizon-blend": 0.6, "horizon-fog-blend": 0.7, "fog-ground-blend": 0.35, "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 12, 0] },
+  sat: { "sky-color": "#8fbfe9", "horizon-color": "#dbe8f4", "fog-color": "#d5dee8", "sky-horizon-blend": 0.6, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.4, "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 12, 0] },
+};
+const nightAt = (d: Date, sunsetIso?: string) => {
+  const sunset = sunsetIso ? new Date(sunsetIso) : null;
+  if (sunset && d.toDateString() === sunset.toDateString()) return d > sunset || d.getHours() < 6;
+  return d.getHours() >= 19 || d.getHours() < 6;
+};
+const DARK_MODES: Mode[] = ["walk", "wheelchair", "bike", "scooter"];
 const REPORT_CATS = ["incident", "hazard", "blocked", "ramp", "light"] as const;
 const LISTS: { id: ListId; label: string; icon: typeof Heart; color: string }[] = [
   { id: "fav", label: "Favorites", icon: Heart, color: "#d93025" },
@@ -125,6 +149,18 @@ const cumDist = (coords: [number, number][]) => {
   for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + km(coords[i - 1], coords[i]) * 1000);
   return c;
 };
+// Distance in km from a point to a polyline (flat-earth approximation, fine at city scale).
+function distToLineKm(p: [number, number], line: [number, number][]) {
+  let best = Infinity;
+  for (let i = 1; i < line.length; i++) {
+    const [ax, ay] = [(line[i - 1][0] - p[0]) * 88, (line[i - 1][1] - p[1]) * 111];
+    const [bx, by] = [(line[i][0] - p[0]) * 88, (line[i][1] - p[1]) * 111];
+    const [dx, dy] = [bx - ax, by - ay];
+    const t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1)));
+    best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy));
+  }
+  return line.length === 1 ? km(p, line[0]) : best;
+}
 const bearing = (a: [number, number], b: [number, number]) => (Math.atan2((b[0] - a[0]) * Math.cos((a[1] * Math.PI) / 180), b[1] - a[1]) * 180) / Math.PI;
 function makeNav(route: Scored, sim: boolean, prev?: Nav, avoided = 0): Nav {
   return {
@@ -148,7 +184,7 @@ export default function App() {
   const [contrast, setContrast] = useState(false);
   const [havensOn, setHavensOn] = useState(false);
   const [listenOn, setListenOn] = useState(false);
-  const [layers, setLayers] = useState<LayerState>({ satellite: false, buildings: false, night: false, zones: true });
+  const [layers, setLayers] = useState<LayerState>({ satellite: false, buildings: false, night: false, zones: true, traffic: false, skyline: false });
   const [layersOpen, setLayersOpen] = useState(false);
 
   // ---------- trip ----------
@@ -191,6 +227,9 @@ export default function App() {
   const [center, setCenter] = useState<[number, number]>(CITY.center);
   const [sensors, setSensors] = useState<{ phones: number; cells: { cell: string; n: number }[] }>({ phones: 0, cells: [] });
   const [focusConst, setFocusConst] = useState<number | null>(null);
+  const [traffic, setTraffic] = useState<TrafficIncident[]>([]);
+  const [replayOn, setReplayOn] = useState(false);
+  const [commandOn, setCommandOn] = useState(false);
 
   // ---------- overlays ----------
   const [drawer, setDrawer] = useState(false);
@@ -271,6 +310,22 @@ export default function App() {
     };
   }, []);
 
+  // Live traffic incidents (TomTom via our server) every 3 minutes.
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      try {
+        const j = await fetch("/api/traffic").then((r) => r.json());
+        if (!stop && j.ok) setTraffic(j.incidents);
+      } catch {}
+      if (!stop) setTimeout(tick, 180_000);
+    };
+    tick();
+    return () => {
+      stop = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!theme) return;
     document.documentElement.dataset.theme = theme;
@@ -293,8 +348,9 @@ export default function App() {
 
   const applyVisibility = useCallback((map: MLMap, v: View, L: LayerState) => {
     const set = (id: string, on: boolean) => map.getLayer(id) && map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
-    set("hex", v === "engine");
-    set("hex-line", v === "engine");
+    set("hex", v === "engine" && !L.skyline);
+    set("hex-line", v === "engine" && !L.skyline);
+    set("hex-3d", v === "engine" && L.skyline);
     set("avoid", v === "engine");
     for (const id of ["zones-halo", "zones", "zones-count"]) set(id, v === "nav" && L.zones);
     set("places", v === "nav");
@@ -302,6 +358,22 @@ export default function App() {
     set("sat", L.satellite);
     set("night", L.night);
     set("bldg-3d", L.buildings);
+    set("hillshade", L.buildings);
+    set("traffic", L.traffic);
+    set("traffic-inc", L.traffic);
+    set("tri-ring", v === "nav" || v === "engine");
+    // 3D: real terrain (AWS elevation tiles), lit buildings, sky and haze. Works on the
+    // default map and on satellite imagery draped over the terrain.
+    const th: Theme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    try {
+      map.setTerrain(L.buildings && map.getSource("dem") ? { source: "dem", exaggeration: 1.35 } : null);
+      if (L.buildings) map.setSky((L.satellite ? SKY.sat : SKY[th]) as never);
+      map.setLight({ anchor: "viewport", position: [1.25, 200, 32], color: "#ffffff", intensity: L.buildings ? 0.38 : 0.25 });
+      if (map.getLayer("bldg-3d")) {
+        map.setPaintProperty("bldg-3d", "fill-extrusion-color", (L.satellite ? BLDG_3D.sat : BLDG_3D[th]) as never);
+        map.setPaintProperty("bldg-3d", "fill-extrusion-opacity", L.satellite ? 0.72 : 0.94);
+      }
+    } catch {}
   }, []);
 
   const installLayers = useCallback(
@@ -318,6 +390,25 @@ export default function App() {
         map.addSource("night", { type: "raster", tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png"], tileSize: 256, maxzoom: 8, attribution: "Night lights: NASA Black Marble" });
       if (!map.getLayer("sat")) map.addLayer({ id: "sat", type: "raster", source: "sat", layout: { visibility: "none" } }, firstSymbol);
       if (!map.getLayer("night")) map.addLayer({ id: "night", type: "raster", source: "night", layout: { visibility: "none" }, paint: { "raster-opacity": 0.75 } }, firstSymbol);
+      // Elevation (AWS Terrain Tiles, public): one copy drives 3D terrain, one the hill shading.
+      const dem = { type: "raster-dem" as const, tiles: ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"], encoding: "terrarium" as const, tileSize: 256, maxzoom: 14, attribution: "Elevation: Mapzen / AWS Terrain Tiles" };
+      if (!map.getSource("dem")) map.addSource("dem", dem);
+      if (!map.getSource("dem-hs")) map.addSource("dem-hs", dem);
+      if (!map.getLayer("hillshade"))
+        map.addLayer(
+          {
+            id: "hillshade",
+            type: "hillshade",
+            source: "dem-hs",
+            layout: { visibility: "none" },
+            paint: { "hillshade-exaggeration": th === "dark" ? 0.45 : 0.3, "hillshade-shadow-color": th === "dark" ? "#000000" : "#5b6b80", "hillshade-highlight-color": th === "dark" ? "#2a3446" : "#ffffff", "hillshade-accent-color": th === "dark" ? "#0b0d10" : "#7d8ba0" },
+          },
+          firstSymbol,
+        );
+      // Live traffic speeds (TomTom, proxied so the key stays on the server).
+      if (!map.getSource("traffic"))
+        map.addSource("traffic", { type: "raster", tiles: [`${location.origin}/api/traffic/tile?z={z}&x={x}&y={y}&style=${th === "dark" ? "relative0-dark" : "relative0"}`], tileSize: 256, minzoom: 6, maxzoom: 18, attribution: "Traffic © TomTom" });
+      if (!map.getLayer("traffic")) map.addLayer({ id: "traffic", type: "raster", source: "traffic", minzoom: 6, layout: { visibility: "none" }, paint: { "raster-opacity": 0.95 } }, firstSymbol);
       if (!map.getLayer("bldg-3d") && map.getSource("carto"))
         map.addLayer(
           {
@@ -328,10 +419,11 @@ export default function App() {
             minzoom: 13,
             layout: { visibility: "none" },
             paint: {
-              "fill-extrusion-color": P.bldg,
-              "fill-extrusion-height": ["coalesce", ["get", "render_height"], 12],
+              "fill-extrusion-color": BLDG_3D[th] as never,
+              "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.2, ["coalesce", ["get", "render_height"], 12]],
               "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
-              "fill-extrusion-opacity": 0.85,
+              "fill-extrusion-opacity": 0.94,
+              "fill-extrusion-vertical-gradient": true,
             },
           },
           firstSymbol,
@@ -341,6 +433,20 @@ export default function App() {
       const add = (layer: Parameters<MLMap["addLayer"]>[0]) => !map.getLayer(layer.id) && map.addLayer(layer);
       add({ id: "hex", type: "fill", source: "hex", paint: { "fill-color": P.hex, "fill-opacity": ["*", 0.6, ["get", "s"]] } });
       add({ id: "hex-line", type: "line", source: "hex", paint: { "line-color": P.hex, "line-width": 0.5, "line-opacity": ["*", 0.8, ["get", "s"]] } });
+      // 3D risk skyline: every block's risk as a glowing column (optional, "How it works").
+      add({
+        id: "hex-3d",
+        type: "fill-extrusion",
+        source: "hex",
+        layout: { visibility: "none" },
+        paint: {
+          "fill-extrusion-color": ["interpolate", ["linear"], ["get", "s"], 0, th === "dark" ? "#1d4ed8" : "#93b4f5", 0.45, "#6d5cf6", 0.7, "#e2408a", 0.9, "#ff7a45", 1, "#ffd166"],
+          "fill-extrusion-height": ["*", ["^", ["get", "s"], 2.2], 1500],
+          "fill-extrusion-base": 0,
+          "fill-extrusion-opacity": 0.9,
+          "fill-extrusion-vertical-gradient": true,
+        },
+      });
       const hover = ["boolean", ["feature-state", "hover"], false];
       add({ id: "zones-halo", type: "circle", source: "zones", paint: { "circle-radius": metersToPx("mh") as never, "circle-color": ["interpolate", ["linear"], ["get", "s"], 0, P.zoneLo, 1, P.zoneHi], "circle-opacity": ["case", hover as never, 0.22, 0.1], "circle-blur": 0.6, "circle-pitch-alignment": "map" } });
       add({
@@ -401,7 +507,7 @@ export default function App() {
       add({ id: "route-casing", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": P.casing, "line-width": 10 } });
       add({ id: "route", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": P.route, "line-width": 7 } });
       add({ id: "havens", type: "circle", source: "havens", paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 2.5, 16, 5], "circle-color": "#188038", "circle-opacity": ["interpolate", ["linear"], ["zoom"], 12, 0.35, 15, 0.9], "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
-      add({ id: "live-lines", type: "line", source: "liveLines", paint: { "line-color": th === "light" ? "#202124" : "#fff", "line-width": 1.5, "line-opacity": 0.7 } });
+      add({ id: "live-lines", type: "line", source: "liveLines", paint: { "line-color": "#d93025", "line-width": 2, "line-opacity": 0.75, "line-dasharray": [2, 1.5] } });
       add({
         id: "live",
         type: "circle",
@@ -418,6 +524,12 @@ export default function App() {
       add({ id: "sel-line", type: "line", source: "sel", paint: { "line-color": P.sel, "line-width": 2.5 } });
       add({ id: "sel-links", type: "line", source: "selLinks", paint: { "line-color": P.sel, "line-width": 1, "line-opacity": 0.6, "line-dasharray": [1, 1.5] } });
       add({ id: "sel-pts", type: "circle", source: "selPts", paint: { "circle-radius": 4.5, "circle-color": ["match", ["get", "k"], "crash", "#f29900", "#d93025"], "circle-stroke-color": th === "light" ? "#fff" : "#0e1012", "circle-stroke-width": 1.5 } });
+      // Streetlights reported out (SF 311) and live traffic incidents (TomTom).
+      add({ id: "lights", type: "symbol", source: "lights", minzoom: 13.5, layout: { "icon-image": "alert-light", "icon-size": ["interpolate", ["linear"], ["zoom"], 13.5, 0.42, 17, 0.6], "icon-allow-overlap": true } });
+      add({ id: "traffic-inc", type: "symbol", source: "trafficInc", minzoom: 9, layout: { visibility: "none", "icon-image": ["concat", "ti-", ["get", "kind"]], "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.38, 13, 0.52, 16, 0.62], "icon-allow-overlap": false, "symbol-sort-key": ["-", 0, ["get", "rank"]] } });
+      // Acoustic triangulation: estimated origin of a bang heard by 2+ phones, with its error circle.
+      add({ id: "tri-ring", type: "circle", source: "tri", paint: { "circle-radius": metersToPx("r") as never, "circle-color": "#d93025", "circle-opacity": 0.14, "circle-stroke-color": "#d93025", "circle-stroke-width": 2, "circle-pitch-alignment": "map" } });
+      add({ id: "tri-pt", type: "circle", source: "tri", paint: { "circle-radius": 5, "circle-color": "#d93025", "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
       add({ id: "me-halo", type: "circle", source: "me", paint: { "circle-radius": 18, "circle-color": P.me, "circle-opacity": 0.16 } });
       add({ id: "me", type: "circle", source: "me", paint: { "circle-radius": 7, "circle-color": P.me, "circle-stroke-color": "#fff", "circle-stroke-width": 2.5 } });
       add({
@@ -449,6 +561,7 @@ export default function App() {
       const map = new maplibre.Map({ container: mapDiv.current, style: STYLE[theme], center: CITY.center as LngLatLike, zoom: 12.4, attributionControl: { compact: true }, maxPitch: 70 });
       map.addControl(new maplibre.NavigationControl({ showCompass: true, visualizePitch: true }), "bottom-right");
       mapRef.current = map;
+      if (process.env.NODE_ENV !== "production") (window as unknown as { __map?: MLMap }).__map = map;
       map.on("style.load", () => {
         installLayers(map, (document.documentElement.dataset.theme as Theme) ?? "light");
         setMapReady(true);
@@ -465,7 +578,15 @@ export default function App() {
         const [lng, lat] = (f.geometry as GeoJSON.Point).coordinates;
         placeClick.current({ label: String(f.properties.name), lng, lat, cat: String(f.properties.cat), addr: String(f.properties.addr ?? "") });
       });
-      for (const id of ["route-alt", "live", "zones", "places"]) {
+      map.on("click", "traffic-inc", (e) => {
+        const f = e.features?.[0];
+        if (f) setToast(`${f.properties.title}${f.properties.detail ? ` · ${f.properties.detail}` : ""}`);
+      });
+      map.on("click", "lights", (e) => {
+        const f = e.features?.[0];
+        if (f) setToast(`Streetlight ${String(f.properties.kind).toLowerCase()} · ${f.properties.addr} · reported ${fmtAgo(Number(f.properties.since))} (SF 311)`);
+      });
+      for (const id of ["route-alt", "live", "zones", "places", "traffic-inc", "lights"]) {
         map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
         map.on("mouseleave", id, () => (map.getCanvas().style.cursor = ""));
       }
@@ -518,12 +639,50 @@ export default function App() {
     const map = mapRef.current;
     if (!map || !mapReady || was3d.current === layers.buildings) return;
     was3d.current = layers.buildings;
-    map.easeTo(layers.buildings ? { pitch: 58, bearing: -18, zoom: Math.max(map.getZoom(), 15), duration: 900 } : { pitch: 0, bearing: 0, duration: 700 });
+    map.easeTo(layers.buildings ? { pitch: 63, bearing: -24, zoom: Math.max(map.getZoom(), 15.4), duration: 1400 } : { pitch: 0, bearing: 0, duration: 800 });
+    // Then a slow orbit, like a 3D flyover (any drag or zoom stops it).
+    if (layers.buildings && !navRef.current)
+      map.once("moveend", () => {
+        if (layersRef.current.buildings && !navRef.current) map.rotateTo(map.getBearing() + 40, { duration: 14000, easing: (x) => x });
+      });
   }, [layers.buildings, mapReady]);
+
+  // Risk skyline: tilt the camera so the columns read as a skyline.
+  const wasSky = useRef(false);
+  useEffect(() => {
+    const map = mapRef.current;
+    const on = layers.skyline && view === "engine";
+    if (!map || !mapReady || wasSky.current === on) return;
+    wasSky.current = on;
+    if (on) map.easeTo({ center: [-122.427, 37.752], pitch: 58, bearing: -24, zoom: 12.1, duration: 1600 });
+    else if (!layers.buildings) map.easeTo({ pitch: 0, bearing: 0, duration: 800 });
+  }, [layers.skyline, layers.buildings, view, mapReady]);
+
+  // Car and moped trips: show live traffic, like a driving app.
+  useEffect(() => {
+    if (mode === "car" || mode === "moped") setLayers((l) => (l.traffic ? l : { ...l, traffic: true }));
+  }, [mode]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const rank = { closure: 5, accident: 4, hazard: 3, roadworks: 2, jam: 1, other: 0 };
+    setData("trafficInc", fc(traffic.filter((i) => i.kind !== "jam" || i.magnitude >= 3).map((i) => pt([i.lng, i.lat], { kind: i.kind === "closure" && !i.full ? "roadworks" : i.kind, title: i.title, detail: i.detail, rank: rank[i.kind] }))));
+  }, [traffic, mapReady, setData]);
+  useEffect(() => {
+    if (!mapReady) return;
+    setData("lights", fc((sources?.lights ?? []).map((l) => pt([l.lng, l.lat], { addr: l.addr, kind: l.kind, since: l.since }))));
+  }, [sources, mapReady, setData]);
 
   // ---------- risk ----------
   const when = useMemo(() => new Date(Date.now() + offset * 60_000), [offset]);
-  const cells = useMemo(() => scoreCells(events, mode, when), [events, mode, when]);
+  // After sunset, open 311 streetlight outages count as risk for people on foot, wheels or bikes.
+  const darkEvents = useMemo<Ev[]>(() => {
+    if (!DARK_MODES.includes(mode) || !nightAt(when, sources?.weather?.sunset)) return [];
+    const d = new Date().toISOString().slice(0, 10);
+    return (sources?.lights ?? []).map((l) => ({ c: latLngToCell(l.lat, l.lng, 9), t: "dark", d, h: when.getHours(), x: `Streetlight ${l.kind.toLowerCase()}, ${l.addr}`, lat: l.lat, lng: l.lng }));
+  }, [sources, mode, when]);
+  const scoringEvents = useMemo(() => (darkEvents.length ? [...events, ...darkEvents] : events), [events, darkEvents]);
+  const cells = useMemo(() => scoreCells(scoringEvents, mode, when), [scoringEvents, mode, when]);
   const live = useMemo(() => liveCells(zones), [zones]);
   const threshold = useMemo(() => percentile([...cells.values()].map((c) => c.score), 0.9), [cells]);
   const parentScores = useMemo(() => {
@@ -625,11 +784,21 @@ export default function App() {
 
   // ---------- live layer: poll every 1.5 s ----------
   const seen = useRef(new Set<string>());
+  // Clock sync with the server (NTP-style): offset from the poll with the shortest round trip
+  // among the last 30, so phones agree on time to within a few ms for triangulation.
+  const clock = useRef<{ offset: number; rtt: number; samples: { offset: number; rtt: number }[] }>({ offset: 0, rtt: Infinity, samples: [] });
   useEffect(() => {
     let stop = false;
     const tick = async () => {
       try {
+        const t0 = Date.now();
         const j = await fetch("/api/live").then((r) => r.json());
+        const t1 = Date.now();
+        const c = clock.current;
+        c.samples = [...c.samples, { offset: j.now - (t0 + t1) / 2, rtt: t1 - t0 }].slice(-30);
+        const bestSample = c.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a));
+        c.offset = bestSample.offset;
+        c.rtt = bestSample.rtt;
         if (!stop) {
           setZones(j.zones);
           if (j.sensors) setSensors(j.sensors);
@@ -649,14 +818,19 @@ export default function App() {
       seen.current.add(key);
       addLog(
         z.kind === "sound"
-          ? `Live alert · ${z.level === "confirmed" ? "CONFIRMED gunshot" : "possible gunshot"} at ${z.lat.toFixed(4)}, ${z.lng.toFixed(4)} (${z.count} ${z.count === 1 ? "phone" : "phones"})`
+          ? `Live alert · ${z.level === "confirmed" ? "CONFIRMED gunshot" : "possible gunshot"} at ${z.lat.toFixed(4)}, ${z.lng.toFixed(4)} (${z.count} ${z.count === 1 ? "phone" : "phones"})${z.origin ? ` · triangulated from arrival times ${z.spreadMs} ms apart, ±${Math.round((z.radiusM ?? 0) * 3.28)} ft${z.demo ? " (demo)" : ""}` : ""}`
           : `Community report · ${z.category} · ${z.count}/3 people${z.level === "confirmed" ? " → counted" : ""}`,
         "live",
       );
     }
     if (!mapReady) return;
     setData("live", fc(zones.map((z) => pt([z.lng, z.lat], { kind: z.kind, level: z.level, id: z.id, category: z.category ?? "", count: z.count, ids: ((z as { reportIds?: string[] }).reportIds ?? []).join(",") }))));
-    setData("liveLines", fc(zones.filter((z) => (z.points?.length ?? 0) > 1).map((z) => line(z.points!))));
+    // Triangulated bangs: spokes from each (coarsened) phone area to the estimated origin.
+    setData(
+      "liveLines",
+      fc(zones.filter((z) => (z.points?.length ?? 0) > 1).flatMap((z) => (z.origin ? z.points!.map((p) => line([p, z.origin!])) : [line(z.points!)]))),
+    );
+    setData("tri", fc(zones.filter((z) => z.origin).map((z) => pt(z.origin!, { r: z.radiusM ?? 30 }))));
   }, [zones, mapReady, setData, addLog]);
 
   useEffect(() => {
@@ -904,11 +1078,7 @@ export default function App() {
 
   // ---------- routing ----------
   const isNight = useCallback(
-    (d: Date) => {
-      const sunset = sources?.weather?.sunset ? new Date(sources.weather.sunset) : null;
-      if (sunset && d.toDateString() === sunset.toDateString()) return d > sunset || d.getHours() < 6;
-      return d.getHours() >= 19 || d.getHours() < 6;
-    },
+    (d: Date) => nightAt(d, sources?.weather?.sunset),
     [sources],
   );
 
@@ -935,9 +1105,37 @@ export default function App() {
       try {
         const night = isNight(when);
         addLog(`${opts?.reason ?? "Route request"} · ${mode} · ${a.label} → ${b.label}${night ? " · after sunset: prefer lit streets" : ""}`, "route");
-        const fastRoutes = await fetchRoutes(mode, a, b, night);
-        const fastest = fastRoutes[0];
+        let fastRoutes = await fetchRoutes(mode, a, b, night);
         addLog(`Router returned ${fastRoutes.length} candidate${fastRoutes.length > 1 ? "s" : ""} in ${Math.round(performance.now() - T0)} ms`, "route");
+
+        // Roads closed right now (TomTom live incidents + Caltrans): car and moped routes skip them.
+        const closureBoxes: [number, number][][] = [];
+        let roads: Roads | null = null;
+        if (mode === "car" || mode === "moped") {
+          const box = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+          const touches = (r: Route, i: TrafficIncident) => i.line.some((p) => distToLineKm(p, r.coords) < 0.025);
+          const closed = traffic.filter((i) => i.full);
+          const hits = closed.filter((i) => fastRoutes.some((r) => touches(r, i))).slice(0, 8);
+          for (const i of hits) {
+            const [x, y] = i.line[Math.floor(i.line.length / 2)];
+            closureBoxes.push(box(x - 0.00028, y - 0.00028, x + 0.00028, y + 0.00028));
+          }
+          roads = await fetch("/api/roads").then((r) => r.json()).catch(() => null);
+          const full = roads?.closures.filter((c) => c.type === "Full") ?? [];
+          for (const c of full) {
+            const d = 0.0006;
+            closureBoxes.push(box(Math.min(c.lng, c.lng2) - d, Math.min(c.lat, c.lat2) - d, Math.max(c.lng, c.lng2) + d, Math.max(c.lat, c.lat2) + d));
+          }
+          addLog(`Live traffic: ${closed.length} road closures in the Bay Area, ${hits.length} on this trip's candidate routes avoided · Caltrans: ${roads?.cameras.length ?? 0} cameras, ${full.length} full closures`, "data");
+          // Keep only legal candidates; if every one used a closed road, ask again without them.
+          if (hits.length) {
+            const legal = fastRoutes.filter((r) => !hits.some((i) => touches(r, i)));
+            const detour = legal.length ? [] : await fetchRoutes(mode, a, b, night, closureBoxes, 1).catch(() => []);
+            if (legal.length || detour.length) fastRoutes = [...legal, ...detour];
+          }
+        }
+        const closurePerim = closureBoxes.reduce((sum, r) => sum + ringPerimeterM(r), 0);
+        const fastest = fastRoutes[0];
 
         // Avoid zones: high-risk cells near the trip and every live alert, merged into
         // polygons, highest risk first, until the router's size limit is reached.
@@ -960,26 +1158,14 @@ export default function App() {
         for (const [c] of [...candidates].sort((p, q) => q[1] - p[1]).slice(0, 80)) {
           const next = cellsToMultiPolygon([...chosen, c], true);
           const perim = next.reduce((s, poly) => s + ringPerimeterM(poly[0]), 0);
-          if (perim > MAX_EXCLUDE_M) continue;
+          if (perim > MAX_EXCLUDE_M - closurePerim) continue;
           chosen.push(c);
           polys = next;
           perimeter = perim;
         }
-        const exclude = polys.map((p) => p[0] as [number, number][]);
+        const exclude = [...polys.map((p) => p[0] as [number, number][]), ...closureBoxes];
         addLog(`${candidates.size} high-risk cells near the trip → ${chosen.length} avoided as ${exclude.length} polygon${exclude.length === 1 ? "" : "s"} (${((perimeter / 1000) * 0.621371).toFixed(1)} mi perimeter)`, "route");
 
-        let roads: Roads | null = null;
-        if (mode === "car" || mode === "moped") {
-          roads = await fetch("/api/roads").then((r) => r.json()).catch(() => null);
-          const full = roads?.closures.filter((c) => c.type === "Full") ?? [];
-          for (const c of full) {
-            const d = 0.0006;
-            const x0 = Math.min(c.lng, c.lng2) - d, x1 = Math.max(c.lng, c.lng2) + d;
-            const y0 = Math.min(c.lat, c.lat2) - d, y1 = Math.max(c.lat, c.lat2) + d;
-            exclude.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]);
-          }
-          addLog(`Caltrans: ${roads?.cameras.length ?? 0} cameras, ${roads?.closures.length ?? 0} active closures (${full.length} full closures avoided)`, "data");
-        }
         const safeRoutes = exclude.length ? await fetchRoutes(mode, a, b, night, exclude, 1).catch(() => []) : [];
         if (id !== computeId.current) return;
 
@@ -1037,7 +1223,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [startKey, to, events, mode, when, cells, live, threshold, t, setData, addLog, fit, fromIsMe, isNight],
+    [startKey, to, events, mode, when, cells, live, threshold, t, setData, addLog, fit, fromIsMe, isNight, traffic],
   );
 
   // Route automatically whenever start, destination, mode or departure time change.
@@ -1249,11 +1435,14 @@ export default function App() {
   }, [meInCity, myPos, start]);
 
   const onDetect = useCallback(
-    async (d: Detection, at?: [number, number]) => {
+    async (d: Detection, at?: [number, number], demo = false) => {
       const [lng, lat] = at ?? here();
       navigator.vibrate?.([300, 100, 300]);
       addLog(`Microphone: ${d.label} detected on this phone (confidence ${(d.confidence * 100).toFixed(0)}%) · audio stays on device`, "live");
-      const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sound", lat, lng, device: device.current, confidence: d.confidence }) }).then((r) => r.json());
+      // Arrival time on the server's clock lets 2+ phones triangulate where the bang came from.
+      const onset = d.onset !== undefined ? d.onset + clock.current.offset : undefined;
+      if (onset !== undefined) addLog(`Sound onset timed to the millisecond · clock synced to server (round trip ${Math.round(clock.current.rtt)} ms)`, "live");
+      const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sound", lat, lng, device: device.current, confidence: d.confidence, at: onset, demoOrigin: demo ? [lng, lat] : undefined }) }).then((r) => r.json());
       setZones(j.zones);
       setAlert({ id: j.id, d });
     },
@@ -1356,24 +1545,55 @@ export default function App() {
     if (n && !n.arrived) {
       // Mid-trip: the bang happens on the road ahead of you.
       const c = n.route.coords;
-      return onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c[Math.min(c.length - 1, n.idx + Math.max(8, Math.floor((c.length - n.idx) * 0.35)))]);
+      return onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c[Math.min(c.length - 1, n.idx + Math.max(8, Math.floor((c.length - n.idx) * 0.35)))], true);
     }
     const c = result ? (pick === "fastest" ? result.fastest : result.safer).coords : null;
-    onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c ? c[Math.floor(c.length * 0.55)] : undefined);
+    onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c ? c[Math.floor(c.length * 0.55)] : undefined, true);
+  };
+
+  // Command center: a full-screen ops view over the live map (dark, with live traffic).
+  const beforeCommand = useRef<{ theme: Theme; traffic: boolean } | null>(null);
+  // The ops feed shows what changed: crashes, hazards, major queues and closures from the last 2 h
+  // (long-running roadworks and all-day event closures would drown everything else).
+  const notableTraffic = useMemo(
+    () => traffic.filter((i) => i.kind === "accident" || i.kind === "hazard" || (i.kind === "jam" && i.magnitude >= 3) || (i.full && !!i.since && Date.now() - i.since < 2 * 3600e3)),
+    [traffic],
+  );
+  // The command center's panels frame a map window; aim the camera at the middle of it.
+  const commandPadding = () =>
+    window.innerWidth >= 1100 ? { top: 170, bottom: 140, left: 350, right: 370 } : { top: 70, bottom: Math.round(window.innerHeight * 0.55), left: 0, right: 0 };
+  const openCommand = () => {
+    beforeCommand.current = { theme: theme ?? "light", traffic: layers.traffic };
+    setReplayOn(false);
+    setCommandOn(true);
+    setView("engine");
+    setLayers((l) => ({ ...l, traffic: true }));
+    if (theme !== "dark") setTheme("dark");
+    mapRef.current?.flyTo({ center: [-122.432, 37.765], zoom: 12.3, pitch: 0, bearing: 0, padding: commandPadding(), duration: 1200 });
+    addLog("Command center opened · live feeds, cameras, sensors and anomalies in one view", "data");
+  };
+  const exitCommand = () => {
+    setCommandOn(false);
+    mapRef.current?.easeTo({ padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
+    const b = beforeCommand.current;
+    if (b) {
+      setLayers((l) => ({ ...l, traffic: b.traffic }));
+      if (b.theme !== "dark") setTheme(b.theme);
+    }
   };
 
   // Splash screen: stars while the map and data load (at least ~1.4 s).
   useEffect(() => {
     if (!bootAt.current) bootAt.current = performance.now();
-    if (!events.length || !mapReady || splash !== "on") return;
+    if (!events.length || !mapReady) return;
     const wait = Math.max(0, 1400 - (performance.now() - bootAt.current));
-    const a = setTimeout(() => setSplash("fading"), wait);
+    const a = setTimeout(() => setSplash((s) => (s === "on" ? "fading" : s)), wait);
     const b = setTimeout(() => setSplash("off"), wait + 600);
     return () => {
       clearTimeout(a);
       clearTimeout(b);
     };
-  }, [events.length, mapReady, splash]);
+  }, [events.length, mapReady]);
 
   // ---------- reports ----------
   const sendReport = async (cat: string) => {
@@ -1440,7 +1660,7 @@ export default function App() {
     : null;
 
   return (
-    <div className={`app ${largeText ? "large" : ""} ${contrast ? "contrast" : ""} view-${view} ${showDir || showSide ? "panel-open" : ""} ${nav ? "navigating" : ""}`} lang={lang}>
+    <div className={`app ${largeText ? "large" : ""} ${contrast ? "contrast" : ""} view-${view} ${showDir || showSide ? "panel-open" : ""} ${nav ? "navigating" : ""} ${commandOn ? "commanding" : ""}`} lang={lang}>
       <div ref={mapDiv} className="map" role="application" aria-label={view === "engine" ? "Map. Click a spot to inspect its risk." : "Map. Click to drop a pin."} />
 
       {/* ----- left rail (desktop) ----- */}
@@ -1598,6 +1818,26 @@ export default function App() {
           >
             <Satellite size={18} />
           </button>
+          <button
+            className={`icon-btn card round td-btn ${layers.buildings ? "pressed" : ""}`}
+            onClick={() => setLayers((l) => ({ ...l, buildings: !l.buildings }))}
+            aria-pressed={layers.buildings}
+            aria-label="3D view"
+            title={layers.buildings ? "Back to 2D" : "3D view: terrain and buildings"}
+          >
+            3D
+          </button>
+          {view === "engine" && (
+            <button
+              className={`icon-btn card round ${layers.skyline ? "pressed" : ""}`}
+              onClick={() => setLayers((l) => ({ ...l, skyline: !l.skyline }))}
+              aria-pressed={layers.skyline}
+              aria-label="3D risk skyline"
+              title="3D risk skyline"
+            >
+              <ChartColumnBig size={18} />
+            </button>
+          )}
           <button className="icon-btn card round" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label={theme === "dark" ? t("light") : t("dark")} title={theme === "dark" ? t("light") : t("dark")}>
             {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
@@ -1922,6 +2162,29 @@ export default function App() {
           anomalies={anomalies}
           sensors={sensors}
           corroborated={corroborated}
+          onCommand={openCommand}
+          onReplay={() => setReplayOn(true)}
+          skyline={layers.skyline}
+          onSkyline={() => setLayers((l) => ({ ...l, skyline: !l.skyline }))}
+        />
+      )}
+      {replayOn && <Replay map={mapReady ? mapRef.current : null} events={events} theme={theme ?? "light"} onClose={() => setReplayOn(false)} />}
+      {commandOn && (
+        <Command
+          theme={theme ?? "dark"}
+          events={events}
+          cells={cells}
+          zones={zones}
+          sources={sources}
+          anomalies={anomalies}
+          constellations={constellations}
+          forecast={forecast}
+          sensors={sensors}
+          corroborated={corroborated}
+          traffic={notableTraffic}
+          log={log}
+          onExit={exitCommand}
+          onFocus={(lng, lat, zoom = 15) => mapRef.current?.flyTo({ center: [lng, lat], zoom, padding: commandPadding(), duration: 1400, essential: true })}
         />
       )}
 
@@ -1980,8 +2243,14 @@ export default function App() {
                 </span>
                 Risk zones
               </button>
+              <button className={`lp-tile ${layers.traffic ? "on" : ""}`} onClick={() => setLayers((l) => ({ ...l, traffic: !l.traffic }))}>
+                <span className="lp-thumb">
+                  <TrafficCone size={18} />
+                </span>
+                Traffic
+              </button>
             </div>
-            <p className="fine">Satellite: Esri · Night lights: NASA</p>
+            <p className="fine">Satellite: Esri · Night lights: NASA · Traffic: TomTom · Terrain: AWS</p>
           </div>
         )}
       </div>
@@ -2207,6 +2476,14 @@ export default function App() {
         <div className="alert" role="alertdialog" aria-modal="true" aria-labelledby="alert-title">
           <h2 id="alert-title">{t("alertTitle")}</h2>
           <p>{t("alertBody")}</p>
+          {(() => {
+            const z = zones.find((x) => x.id === alert.id || (x.kind === "sound" && x.origin && Math.abs(x.ts - Date.now()) < 60_000));
+            return z?.origin ? (
+              <p className="a-tri">
+                Heard by {z.count} phones · origin located within {fmtDist((z.radiusM ?? 0) / 1609.34)} by arrival times
+              </p>
+            ) : null;
+          })()}
           <button className="a-safe" onClick={() => answer("safe")}>
             {t("safe")}
           </button>
@@ -2419,7 +2696,7 @@ function WhyItem({ a, lang, t, tag }: { a: Avoided; lang: Lang; t: (k: Key) => s
           <polygon points={hex} className="ws-hex" />
           {marks.map((e, i) => {
             const [x, y] = sat.toPx([e.lng, e.lat]);
-            return <circle key={i} cx={x} cy={y} r={e.t.startsWith("crash") ? 4 : 5} className={e.t.startsWith("crash") ? "ws-crash" : "ws-crime"} />;
+            return <circle key={i} cx={x} cy={y} r={e.t.startsWith("crash") ? 4 : 5} className={e.t.startsWith("crash") ? "ws-crash" : e.t === "dark" ? "ws-dark" : "ws-crime"} />;
           })}
         </svg>
         <span className="ws-count">{a.events.length}</span>
@@ -2429,7 +2706,7 @@ function WhyItem({ a, lang, t, tag }: { a: Avoided; lang: Lang; t: (k: Key) => s
         <strong>{place ? `Near ${place}` : "Higher-risk block"}</strong>
         <span className="why-types">
           {ranked.slice(0, 3).map(([type, n]) => (
-            <span key={type} className={type.startsWith("crash") ? "wt crash" : "wt crime"}>
+            <span key={type} className={type.startsWith("crash") ? "wt crash" : type === "dark" ? "wt dark" : "wt crime"}>
               {n}× {EVENT_LABEL[lang][type] ?? type}
             </span>
           ))}

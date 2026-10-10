@@ -99,7 +99,7 @@ async function trafficFor(body: Body, freeFlowMinutes: number): Promise<{ f: num
         hit = { at: Date.now(), minutes: j.routes[0].summary.travelTimeInSeconds / 60 };
         liveCache.set(id, hit);
       }
-      const f = Math.min(3, Math.max(0.8, hit.minutes / freeFlowMinutes));
+      const f = Math.min(6, Math.max(0.8, hit.minutes / freeFlowMinutes));
       return { f: body.mode === "moped" ? 1 + (f - 1) * 0.8 : f, source: "live" };
     } catch {}
   }

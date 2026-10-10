@@ -1,7 +1,7 @@
 // Live layer shared by every phone: sound detections and community reports.
 // Kept in server memory (fine for a single demo server). Phones poll GET every ~1.5 s.
 import type { LiveZone } from "@/lib/scoring";
-import { latLngToCell } from "h3-js";
+import { cellToLatLng, latLngToCell } from "h3-js";
 
 type Raw = {
   id: string;
@@ -12,6 +12,8 @@ type Raw = {
   ts: number;
   device: string;
   confidence?: number;
+  at?: number; // sound onset on the server's clock (ms), from the phone's synced clock
+  demo?: boolean;
   answer?: "danger" | "safe";
   votes: { device: string; vote: "confirm" | "gone" }[];
 };
@@ -41,7 +43,7 @@ const TTL = {
   reportIncident: 6 * 60 * MIN,
   reportHazard: 7 * 24 * 60 * MIN,
 };
-const SOUND_RADIUS_M = 500;
+const SOUND_RADIUS_M = 800; // a gunshot carries 1+ mi; phones this close hear the same one
 const SOUND_WINDOW_MS = 3000;
 const REPORT_RADIUS_M = 150;
 
@@ -52,10 +54,54 @@ function meters(a: { lat: number; lng: number }, b: { lat: number; lng: number }
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+// Phone positions are never returned exactly: snapped to the center of a ~0.01 sq mi cell.
+const snap = (p: { lat: number; lng: number }): [number, number] => {
+  const [lat, lng] = cellToLatLng(latLngToCell(p.lat, p.lng, 10));
+  return [lng, lat];
+};
+
+// ---------- acoustic triangulation ----------
+// Sound travels 343 m/s, so phones that heard the same bang at slightly different times
+// (on synced clocks) pin down where it came from. Grid search over (x, y): for each point the
+// best emission time is the mean of (arrival - distance / c); the cost is the timing misfit
+// (assumed ±30 ms per phone for clock sync and audio latency) plus a weak pull toward the
+// phones, which keeps two-phone cases sensible. The error radius covers every point whose
+// cost is within 4 of the best (about 2 sigma).
+const C = 343;
+const SIGMA_S = 0.03;
+function triangulate(obs: { lat: number; lng: number; at: number }[]) {
+  const lat0 = obs.reduce((a, o) => a + o.lat, 0) / obs.length;
+  const lng0 = obs.reduce((a, o) => a + o.lng, 0) / obs.length;
+  const mx = 111320 * Math.cos((lat0 * Math.PI) / 180), my = 110540;
+  const P = obs.map((o) => ({ x: (o.lng - lng0) * mx, y: (o.lat - lat0) * my, t: (o.at - obs[0].at) / 1000 }));
+  const cost = (x: number, y: number) => {
+    const r = P.map((p) => p.t - Math.hypot(p.x - x, p.y - y) / C);
+    const m = r.reduce((a, b) => a + b, 0) / r.length;
+    return r.reduce((a, v) => a + ((v - m) / SIGMA_S) ** 2, 0) + (Math.hypot(x, y) / 400) ** 2;
+  };
+  const grid: { x: number; y: number; c: number }[] = [];
+  let best = { x: 0, y: 0, c: Infinity };
+  for (let x = -900; x <= 900; x += 12)
+    for (let y = -900; y <= 900; y += 12) {
+      const c = cost(x, y);
+      grid.push({ x, y, c });
+      if (c < best.c) best = { x, y, c };
+    }
+  for (let step = 6; step >= 0.75; step /= 2)
+    for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step], [step, step], [-step, -step], [step, -step], [-step, step]]) {
+      const c = cost(best.x + dx, best.y + dy);
+      if (c < best.c) best = { x: best.x + dx, y: best.y + dy, c };
+    }
+  const inside = grid.filter((g) => g.c <= best.c + 4).map((g) => Math.hypot(g.x - best.x, g.y - best.y)).sort((a, b) => a - b);
+  const radiusM = Math.min(600, Math.max(25, inside.length ? inside[Math.floor(inside.length * 0.9)] : 25));
+  const ts = obs.map((o) => o.at);
+  return { origin: [lng0 + best.x / mx, lat0 + best.y / my] as [number, number], radiusM: Math.round(radiusM), spreadMs: Math.round(Math.max(...ts) - Math.min(...ts)) };
+}
+
 function zones(now: number) {
   const out: (LiveZone & { reportIds?: string[]; confirms?: number })[] = [];
 
-  // Sound: phones that heard a bang within 3 s and 500 m of each other form one event.
+  // Sound: phones that heard a bang within 3 s and 800 m of each other form one event.
   const sounds = store.filter((e) => e.kind === "sound" && now - e.ts < TTL.soundConfirmed);
   const used = new Set<string>();
   for (const s of sounds.sort((a, b) => a.ts - b.ts)) {
@@ -70,15 +116,20 @@ function zones(now: number) {
     if (devices.size === 1 && allSafe) continue; // cancelled
     const confirmed = devices.size >= 2 || danger;
     if (now - s.ts > (confirmed ? TTL.soundConfirmed : TTL.soundCaution)) continue;
+    // One timed observation per phone; 2+ phones with synced clocks can be triangulated.
+    const timed = [...new Map(group.filter((g) => typeof g.at === "number").map((g) => [g.device, g as Raw & { at: number }])).values()];
+    const tri = timed.length >= 2 ? triangulate(timed) : null;
     out.push({
       id: s.id,
       kind: "sound",
       level: confirmed ? "confirmed" : "caution",
-      lat: group.reduce((a, g) => a + g.lat, 0) / group.length,
-      lng: group.reduce((a, g) => a + g.lng, 0) / group.length,
+      lat: tri ? tri.origin[1] : group.reduce((a, g) => a + g.lat, 0) / group.length,
+      lng: tri ? tri.origin[0] : group.reduce((a, g) => a + g.lng, 0) / group.length,
       ts: s.ts,
       count: devices.size,
-      points: group.map((g) => [g.lng, g.lat] as [number, number]),
+      points: group.map(snap),
+      ...(tri ?? {}),
+      demo: group.some((g) => g.demo) || undefined,
     });
   }
 
@@ -140,8 +191,26 @@ export async function POST(request: Request) {
       ts: now,
       device: String(b.device),
       confidence: b.confidence,
+      at: Number.isFinite(b.at) && Math.abs(b.at - now) < 10_000 ? +b.at : undefined,
       votes: [],
     };
+    // Demo: three phones around the bang hear it at the times sound would take to reach them
+    // (plus ±6 ms of clock error and ±8 m of GPS error), this phone being one of them.
+    if (b.action === "sound" && Array.isArray(b.demoOrigin)) {
+      const [olng, olat] = b.demoOrigin.map(Number);
+      const t0 = now - 900;
+      const mx = 111320 * Math.cos((olat * Math.PI) / 180), my = 110540;
+      const turn = Math.random() * 360;
+      const phones = [0, 1, 2].map((k) => {
+        const a = ((turn + k * 120 + (Math.random() - 0.5) * 50) * Math.PI) / 180, d = 130 + Math.random() * 170;
+        const x = d * Math.cos(a), y = d * Math.sin(a);
+        const noise = () => (Math.random() - 0.5) * 16;
+        return { lng: olng + (x + noise()) / mx, lat: olat + (y + noise()) / my, at: t0 + (d / C) * 1000 + (Math.random() - 0.5) * 12 };
+      });
+      Object.assign(ev, { ...phones[0], demo: true });
+      for (const [k, p] of phones.slice(1).entries())
+        store.push({ id: Math.random().toString(36).slice(2, 10), kind: "sound", lat: p.lat, lng: p.lng, ts: now, device: `demo-${ev.device}-${k}`, confidence: 0.9, at: p.at, demo: true, votes: [] });
+    }
     store.push(ev);
     return Response.json({ id: ev.id, zones: zones(now) });
   }

@@ -22,14 +22,16 @@ export const TYPE_WEIGHT: Record<string, number> = {
   crash_bike: 3,
   crash_moto: 3,
   crash_vehicle: 3,
+  // An open 311 streetlight outage, counted only after sunset (see App: darkEvents).
+  dark: 2.5,
 };
 
 const CRIME = { shooting: 1, carjacking: 0, robbery: 1, agg_assault: 1, assault: 1, threat: 1, car_breakin: 0 };
 export const MODE_MULT: Record<Mode, Record<string, number>> = {
-  walk: { ...CRIME, crash_ped: 1, crash_bike: 0, crash_moto: 0, crash_vehicle: 0.1 },
-  wheelchair: { ...CRIME, crash_ped: 1, crash_bike: 0, crash_moto: 0, crash_vehicle: 0.1 },
-  bike: { ...CRIME, robbery: 0.8, agg_assault: 0.8, assault: 0.8, threat: 0.6, crash_ped: 0.2, crash_bike: 1, crash_moto: 0.2, crash_vehicle: 0.3 },
-  scooter: { ...CRIME, robbery: 0.8, agg_assault: 0.8, assault: 0.8, threat: 0.6, crash_ped: 0.2, crash_bike: 1, crash_moto: 0.2, crash_vehicle: 0.3 },
+  walk: { ...CRIME, crash_ped: 1, crash_bike: 0, crash_moto: 0, crash_vehicle: 0.1, dark: 1 },
+  wheelchair: { ...CRIME, crash_ped: 1, crash_bike: 0, crash_moto: 0, crash_vehicle: 0.1, dark: 1 },
+  bike: { ...CRIME, robbery: 0.8, agg_assault: 0.8, assault: 0.8, threat: 0.6, crash_ped: 0.2, crash_bike: 1, crash_moto: 0.2, crash_vehicle: 0.3, dark: 0.7 },
+  scooter: { ...CRIME, robbery: 0.8, agg_assault: 0.8, assault: 0.8, threat: 0.6, crash_ped: 0.2, crash_bike: 1, crash_moto: 0.2, crash_vehicle: 0.3, dark: 0.7 },
   moped: { shooting: 1, carjacking: 0.5, robbery: 0.4, agg_assault: 0.4, assault: 0.4, threat: 0.3, car_breakin: 0, crash_ped: 0.1, crash_bike: 0.3, crash_moto: 1, crash_vehicle: 0.6 },
   car: { shooting: 1, carjacking: 1, robbery: 0.1, agg_assault: 0.1, assault: 0.1, threat: 0.05, car_breakin: 0, crash_ped: 0.2, crash_bike: 0.2, crash_moto: 0.3, crash_vehicle: 0.5 },
 };
@@ -80,6 +82,11 @@ export type LiveZone = {
   count: number;
   category?: string;
   points?: [number, number][];
+  // Acoustic triangulation (2+ phones with synced clocks): estimated origin and error radius.
+  origin?: [number, number];
+  radiusM?: number;
+  spreadMs?: number;
+  demo?: boolean;
 };
 
 export function liveCells(zones: LiveZone[]): Map<string, LiveZone> {
