@@ -1,0 +1,10 @@
+{
+  "name": "NorthStar",
+  "short_name": "NorthStar",
+  "description": "Safer routes for every way you move",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "icons": [{ "src": "/favicon.ico", "sizes": "48x48", "type": "image/x-icon" }]
+}
