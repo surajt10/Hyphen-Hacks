@@ -2474,3 +2474,352 @@ button {
     bottom: calc(52vh + 12px);
   }
 }
+
+/* ---------- stars ---------- */
+.galaxy {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+.galaxy canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+.eng-stars {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 190px;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  opacity: 0.9;
+}
+:root[data-theme="light"] .eng-stars {
+  opacity: 0.55;
+}
+.eng-head,
+.eng-controls {
+  position: relative;
+}
+.eng-controls {
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+
+/* ---------- start + turn-by-turn ---------- */
+.start-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px 14px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.btn.start {
+  padding: 10px 26px;
+  font-size: 15px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.start-row .fine {
+  flex: 1;
+}
+.navigating .topbar,
+.navigating .rail,
+.navigating .layers,
+.navigating .fab-col {
+  display: none;
+}
+.nav-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 24px));
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: #0b8043;
+  color: #fff;
+  box-shadow: var(--shadow-lg);
+  z-index: 9;
+}
+:root[data-theme="dark"] .nav-banner {
+  background: #0d5c34;
+}
+.nb-ico {
+  flex: 0 0 auto;
+}
+.nav-banner div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.nav-banner strong {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.nav-banner span:not(.nb-ico) {
+  font-size: 16px;
+  font-weight: 500;
+  opacity: 0.95;
+}
+.nav-sheet {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 24px));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  z-index: 9;
+}
+.ns-main {
+  flex: 1;
+  display: grid;
+  gap: 3px;
+}
+.ns-min {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ok);
+}
+.ns-sub {
+  color: var(--text-2);
+}
+.ns-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ns-live svg {
+  color: #2fbf71;
+  animation: blink 1.6s ease-in-out infinite;
+}
+.ns-live.busy {
+  color: var(--warn);
+  font-weight: 500;
+}
+.ns-demo {
+  justify-self: start;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.danger-btn {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.danger-btn:hover {
+  background: color-mix(in srgb, var(--danger) 85%, #000);
+}
+
+/* ---------- arrival + splash (stars) ---------- */
+.arrival,
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #05070d;
+  display: grid;
+  place-items: center;
+  color: #fff;
+}
+.arrival-stars,
+.splash-stars {
+  position: absolute;
+  inset: 0;
+}
+.arrival-card {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 28px 32px;
+  border-radius: 24px;
+  background: rgba(21, 23, 27, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(6px);
+  width: min(420px, calc(100vw - 32px));
+  animation: rise 0.6s ease-out both;
+}
+.arrival-card svg {
+  color: #2fbf71;
+}
+.arrival-card h2 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.arrival-card p {
+  margin: 0 0 6px;
+  color: #a0aaba;
+}
+.arrival-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.arrival-stats div {
+  display: grid;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.arrival-stats strong {
+  font-size: 22px;
+}
+.arrival-stats span {
+  font-size: 11px;
+  color: #a0aaba;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+.splash {
+  transition: opacity 0.6s ease;
+}
+.splash.fading {
+  opacity: 0;
+  pointer-events: none;
+}
+.splash-brand {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+  animation: rise 0.8s ease-out both;
+}
+.splash-brand svg {
+  color: #007afc;
+  filter: drop-shadow(0 0 18px rgba(0, 122, 252, 0.6));
+}
+.splash-brand h1 {
+  margin: 4px 0 0;
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.splash-brand p {
+  margin: 0;
+  color: #a0aaba;
+  font-size: 16px;
+}
+.splash-load {
+  margin-top: 18px;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #566171;
+}
+
+/* ---------- why-this-route satellite thumbnails ---------- */
+.why-item {
+  align-items: center;
+}
+.why-sat {
+  position: relative;
+  width: 96px;
+  height: 72px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #222;
+}
+.why-sat img,
+.why-sat svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ws-hex {
+  fill: rgba(255, 255, 255, 0.12);
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+.ws-crime,
+.ws-crash {
+  stroke: #fff;
+  stroke-width: 1.4;
+}
+.ws-crime {
+  fill: #ea4335;
+}
+.ws-crash {
+  fill: #f9ab00;
+}
+.ws-live {
+  fill: rgba(234, 67, 53, 0.3);
+  stroke: #ea4335;
+  stroke-width: 2;
+  animation: blink 1.2s ease-in-out infinite;
+}
+.ws-count {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 1px 6px;
+  border-radius: 100px;
+}
+.why-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.wt {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 100px;
+}
+.wt.crime {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.wt.crash {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+.wt.more {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+@media (max-width: 760px) {
+  .nav-banner strong {
+    font-size: 22px;
+  }
+  .why-sat {
+    width: 80px;
+    height: 60px;
+  }
+}

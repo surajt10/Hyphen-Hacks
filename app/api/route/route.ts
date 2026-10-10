@@ -11,17 +11,27 @@ type Body = {
   exclude?: [number, number][][];
   night?: boolean;
   alternates?: number;
+  depart?: string; // ISO time the trip starts
 };
+
+// The public router has free-flow speeds only. For cars and mopeds we apply typical
+// San Francisco congestion by time of day so ETAs match real-world trips more closely.
+function trafficFactor(mode: Mode, d: Date) {
+  if (mode !== "car" && mode !== "moped") return 1;
+  const h = d.getHours(), weekday = d.getDay() >= 1 && d.getDay() <= 5;
+  const f = weekday && ((h >= 7 && h < 10) || (h >= 16 && h < 19)) ? 1.45 : h >= 10 && h < 16 ? 1.25 : h >= 19 && h < 22 ? 1.15 : 1.05;
+  return mode === "moped" ? 1 + (f - 1) * 0.8 : f;
+}
 
 function costing(mode: Mode, night: boolean) {
   const lit = night ? 1 : 0;
   switch (mode) {
     case "walk":
-      return { costing: "pedestrian", options: { pedestrian: { use_lit: lit } } };
+      return { costing: "pedestrian", options: { pedestrian: { use_lit: lit, walking_speed: 4.8 } } };
     case "wheelchair":
-      return { costing: "pedestrian", options: { pedestrian: { type: "wheelchair", use_lit: lit, use_hills: 0, step_penalty: 600 } } };
+      return { costing: "pedestrian", options: { pedestrian: { type: "wheelchair", walking_speed: 3.6, use_lit: lit, use_hills: 0, step_penalty: 600 } } };
     case "bike":
-      return { costing: "bicycle", options: { bicycle: { bicycle_type: "Hybrid", use_roads: 0.3, use_hills: 0.3, use_lit: lit } } };
+      return { costing: "bicycle", options: { bicycle: { bicycle_type: "Hybrid", cycling_speed: 16, use_roads: 0.3, use_hills: 0.3, use_lit: lit } } };
     case "scooter":
       // Kick e-scooters: no sidewalks, prefer bike lanes and quiet streets, avoid rough surfaces.
       return { costing: "bicycle", options: { bicycle: { bicycle_type: "City", cycling_speed: 18, use_roads: 0.1, use_hills: 0.5, avoid_bad_surfaces: 0.8, use_lit: lit } } };
@@ -56,15 +66,22 @@ function decode(str: string): [number, number][] {
 
 type Trip = {
   summary: { time: number; length: number };
-  legs: { shape: string; maneuvers: { instruction: string; length: number }[] }[];
+  legs: { shape: string; maneuvers: { instruction: string; length: number; begin_shape_index: number }[] }[];
 };
 
-const toRoute = (trip: Trip) => ({
-  coords: trip.legs.flatMap((l) => decode(l.shape)),
-  minutes: trip.summary.time / 60,
-  mi: trip.summary.length,
-  steps: trip.legs.flatMap((l) => l.maneuvers.map((m) => ({ text: m.instruction, mi: m.length }))),
-});
+// Each step keeps "at": the index into coords where the maneuver begins (for turn-by-turn).
+const toRoute = (trip: Trip) => {
+  const coords: [number, number][] = [];
+  const steps: { text: string; mi: number; at: number }[] = [];
+  for (const leg of trip.legs) {
+    const offset = coords.length;
+    coords.push(...decode(leg.shape));
+    for (const m of leg.maneuvers) steps.push({ text: m.instruction, mi: m.length, at: offset + m.begin_shape_index });
+  }
+  return { coords, minutes: trip.summary.time / 60, mi: trip.summary.length, steps };
+};
+
+const localIso = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
 async function valhalla(body: Body, exclude?: [number, number][][]) {
   const { costing: c, options } = costing(body.mode, !!body.night);
@@ -77,6 +94,7 @@ async function valhalla(body: Body, exclude?: [number, number][][]) {
     costing_options: options,
     units: "miles",
     alternates: body.alternates ?? 0,
+    ...(body.depart ? { date_time: { type: 1, value: localIso(new Date(body.depart)) } } : {}),
     ...(exclude?.length ? { exclude_polygons: exclude } : {}),
   };
   const res = await fetch(`${VALHALLA}/route`, {
@@ -87,7 +105,8 @@ async function valhalla(body: Body, exclude?: [number, number][][]) {
   const json = await res.json();
   if (!res.ok || !json.trip) throw new Error(json.error ?? `Valhalla ${res.status}`);
   const trips: Trip[] = [json.trip, ...(json.alternates ?? []).map((a: { trip: Trip }) => a.trip)];
-  return trips.map(toRoute);
+  const f = trafficFactor(body.mode, body.depart ? new Date(body.depart) : new Date());
+  return trips.map(toRoute).map((r) => ({ ...r, minutes: r.minutes * f, traffic: f }));
 }
 
 export async function POST(request: Request) {

@@ -36,6 +36,19 @@ async function refresh() {
         return (c.inService as unknown as string) === "true" && img ? { name: loc.locationName, lng: +loc.longitude, lat: +loc.latitude, img } : null;
       })
       .filter(Boolean);
+    // Drop cameras currently showing Caltrans's "Temporarily Unavailable" image (~13.4 KB).
+    const checked = await Promise.all(
+      cache.cams.filter((c) => c.lat > 37.7 && c.lat < 37.83 && c.lng > -122.52 && c.lng < -122.35).map(async (c) => {
+        try {
+          const r = await fetch(c.img, { headers: HEADERS, cache: "no-store" });
+          const size = (await r.arrayBuffer()).byteLength;
+          return size > 13300 && size < 13600 ? null : c;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    cache.cams = checked.filter((c): c is Camera => !!c);
   } catch (err) {
     console.error("cctv", String(err).slice(0, 200));
   }

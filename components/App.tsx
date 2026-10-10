@@ -36,6 +36,7 @@ import {
   Camera,
   Ear,
   CircleDot,
+  CornerUpRight,
 } from "lucide-react";
 import { MODES, type Mode, type Ev, type LiveZone, scoreCells, liveCells, routeRisk, percentile, cellCenter, contribution, LIVE_SCORE } from "@/lib/scoring";
 import { DICTS, EVENT_LABEL, LANGS, type Lang, type Key } from "@/lib/i18n";
@@ -44,11 +45,14 @@ import { categoryFor, nearbyByTags, searchCategory } from "@/lib/places";
 import { fmtAgo, fmtDate, fmtDist, fmtHour, peakWindow, placeOf } from "@/lib/format";
 import Engine, { type LogEntry, type Sources } from "./Engine";
 import { CAT, CAT_UI, MODE_ICON } from "./icons";
+import Galaxy from "./Galaxy";
+import { satellite } from "@/lib/sat";
 
 type Theme = "light" | "dark";
 type View = "nav" | "engine";
 type Place = { label: string; lng: number; lat: number; cat?: string; addr?: string; hours?: string; dist?: number };
-type Route = { coords: [number, number][]; minutes: number; mi: number; steps: { text: string; mi: number }[] };
+type Route = { coords: [number, number][]; minutes: number; mi: number; steps: { text: string; mi: number; at: number }[]; traffic?: number };
+type Nav = { route: Scored; idx: number; pos: [number, number]; cum: number[]; sim: boolean; started: number; avoided: number; arrived?: boolean; rerouting?: boolean; reroutes: number };
 type Scored = Route & { risk: number };
 type Avoided = { cell: string; score: number; events: Ev[]; live?: LiveZone };
 type Camera = { name: string; lng: number; lat: number; img: string };
@@ -109,6 +113,28 @@ const store = (k: string, v: unknown) => {
   } catch {}
 };
 const samePlace = (a: Place, b: Place) => Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lng - b.lng) < 1e-5;
+
+// ---------- turn-by-turn helpers ----------
+const SIM_SPEEDUP = 8; // demo trips run 8x faster than real time
+const SPEED_MPS: Record<Mode, number> = { walk: 1.34, wheelchair: 1.0, bike: 4.4, scooter: 5, moped: 9, car: 9 };
+const cumDist = (coords: [number, number][]) => {
+  const c = [0];
+  for (let i = 1; i < coords.length; i++) c.push(c[i - 1] + km(coords[i - 1], coords[i]) * 1000);
+  return c;
+};
+const bearing = (a: [number, number], b: [number, number]) => (Math.atan2((b[0] - a[0]) * Math.cos((a[1] * Math.PI) / 180), b[1] - a[1]) * 180) / Math.PI;
+function makeNav(route: Scored, sim: boolean, prev?: Nav, avoided = 0): Nav {
+  return {
+    route,
+    idx: 0,
+    pos: route.coords[0],
+    cum: cumDist(route.coords),
+    sim,
+    started: prev?.started ?? Date.now(),
+    avoided: (prev?.avoided ?? 0) + avoided,
+    reroutes: (prev?.reroutes ?? 0) + (prev ? 1 : 0),
+  };
+}
 
 export default function App() {
   // ---------- preferences ----------
@@ -172,6 +198,10 @@ export default function App() {
   const [announce, setAnnounce] = useState("");
   const [online, setOnline] = useState(true);
   const [mapReady, setMapReady] = useState(false);
+  const [nav, setNav] = useState<Nav | null>(null);
+  const navRef = useRef<Nav | null>(null);
+  const [splash, setSplash] = useState<"on" | "fading" | "off">("on");
+  const bootAt = useRef(0);
 
   const mapRef = useRef<MLMap | null>(null);
   const mlRef = useRef<typeof import("maplibre-gl") | null>(null);
@@ -792,7 +822,7 @@ export default function App() {
     const res = await fetch("/api/route", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: m, from: [a.lng, a.lat], to: [b.lng, b.lat], exclude, night, alternates }),
+      body: JSON.stringify({ mode: m, from: [a.lng, a.lat], to: [b.lng, b.lat], exclude, night, alternates, depart: when.toISOString() }),
     });
     const j = await res.json();
     if (!res.ok) throw new Error(j.error);
@@ -801,8 +831,8 @@ export default function App() {
 
   const computeId = useRef(0);
   const compute = useCallback(
-    async (opts?: { quiet?: boolean; reason?: string }) => {
-      const a = start, b = to;
+    async (opts?: { quiet?: boolean; reason?: string; from?: Place }) => {
+      const a = opts?.from ?? start, b = to;
       if (!a || !b || !events.length) return;
       const id = ++computeId.current;
       setBusy(true);
@@ -884,6 +914,12 @@ export default function App() {
 
         setResult({ safer, fastest: fastScored, avoided, timeline, cams });
         setPick("safer");
+        // Mid-trip: swap the new route in and keep navigating.
+        if (navRef.current && !navRef.current.arrived) {
+          const prev = navRef.current;
+          setNav(makeNav(safer, prev.sim, prev, avoided.length));
+          addLog(`Navigation updated live · new route ${Math.round(safer.minutes)} min from current position`, "route");
+        }
         setData("avoid", fc(polys.map((p) => ({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: p[0] } }))));
         const same = safer === fastScored;
         const pct = fastScored.risk > 0 ? Math.round((1 - safer.risk / fastScored.risk) * 100) : 0;
@@ -919,7 +955,17 @@ export default function App() {
   }, [to, startKey]);
 
   useEffect(() => {
+    navRef.current = nav;
+  }, [nav]);
+
+  useEffect(() => {
     if (!mapReady) return;
+    if (nav) {
+      // Navigating: only the road ahead.
+      setData("route", fc([line(nav.route.coords.slice(Math.max(0, nav.idx - 1)))]));
+      setData("routeAlt", fc([]));
+      return;
+    }
     if (!result) {
       setData("route", fc([]));
       setData("routeAlt", fc([]));
@@ -930,22 +976,106 @@ export default function App() {
     const alt = same ? null : pick === "safer" ? result.fastest : result.safer;
     setData("route", fc([line(main.coords)]));
     setData("routeAlt", fc(alt ? [line(alt.coords, { alt: pick === "safer" ? "fastest" : "safer" })] : []));
-  }, [result, pick, mapReady, setData]);
+  }, [result, pick, nav, mapReady, setData]);
 
-  // A new live alert near the route: reroute.
+  // ---------- turn-by-turn navigation ----------
+  const startNav = () => {
+    if (!result) return;
+    const same = result.safer === result.fastest;
+    const route = pick === "fastest" && !same ? result.fastest : result.safer;
+    const n = makeNav(route, !meInCity, undefined, pick === "fastest" ? 0 : result.avoided.length);
+    setNav(n);
+    setPin(null);
+    setPoi(null);
+    setZoneCard(null);
+    addLog(`Navigation started · ${mode} · ${Math.round(route.minutes)} min${n.sim ? " · simulated trip (no GPS)" : " · following GPS"}`, "route");
+  };
+  const exitNav = () => {
+    setNav(null);
+    mapRef.current?.easeTo({ pitch: layers.buildings ? 58 : 0, bearing: 0, duration: 700 });
+    if (result) fit(result.safer.coords);
+  };
+  const reroutingAt = useRef(0);
+  const rerouteFrom = useCallback(
+    (pos: [number, number], reason: string) => {
+      if (Date.now() - reroutingAt.current < 8000) return;
+      reroutingAt.current = Date.now();
+      setNav((n) => (n ? { ...n, rerouting: true } : n));
+      compute({ quiet: true, reason, from: { label: "Current position", lng: pos[0], lat: pos[1] } });
+    },
+    [compute],
+  );
+
+  // Simulated trip (laptops, demos): move along the route at the mode's speed, sped up.
+  useEffect(() => {
+    if (!nav?.sim || nav.arrived) return;
+    const id = setInterval(() => {
+      setNav((n) => {
+        if (!n || n.arrived) return n;
+        const target = n.cum[n.idx] + SPEED_MPS[mode] * SIM_SPEEDUP;
+        let i = n.idx;
+        while (i < n.cum.length - 1 && n.cum[i] < target) i++;
+        const arrived = i >= n.cum.length - 1;
+        return { ...n, idx: i, pos: n.route.coords[i], arrived, rerouting: false };
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [nav?.sim, nav?.arrived, nav?.route, mode]);
+
+  // Real GPS: follow the phone, detect arrival, and reroute if you leave the route.
+  useEffect(() => {
+    const n = navRef.current;
+    if (!n || n.sim || n.arrived || !myPos) return;
+    let best = n.idx, bestD = Infinity;
+    for (let i = Math.max(0, n.idx - 5); i < Math.min(n.route.coords.length, n.idx + 120); i++) {
+      const d = km(myPos, n.route.coords[i]) * 1000;
+      if (d < bestD) [best, bestD] = [i, d];
+    }
+    if (bestD > 60) {
+      rerouteFrom(myPos, `OFF ROUTE: ${Math.round(bestD * 3.28)} ft from the route, rerouting`);
+      return;
+    }
+    const arrived = n.cum[n.cum.length - 1] - n.cum[best] < 25;
+    setNav({ ...n, idx: best, pos: myPos, arrived, rerouting: false });
+  }, [myPos, rerouteFrom]);
+
+  // Camera follows you, pointing the way you're heading.
+  useEffect(() => {
+    if (!nav || nav.arrived) return;
+    const ahead = nav.route.coords[Math.min(nav.idx + 4, nav.route.coords.length - 1)];
+    mapRef.current?.easeTo({
+      center: nav.pos,
+      zoom: 16.6,
+      pitch: 52,
+      bearing: bearing(nav.pos, ahead),
+      duration: 950,
+      padding: window.innerWidth > 760 ? { top: 140, bottom: 140, left: 0, right: 0 } : { top: 150, bottom: 170, left: 0, right: 0 },
+    });
+    if (mapReady) setData("me", fc([pt(nav.pos)]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav?.pos, nav?.arrived]);
+  useEffect(() => {
+    if (nav?.arrived) addLog(`Arrived · ${nav.reroutes} live reroute${nav.reroutes === 1 ? "" : "s"} · ${nav.avoided} higher-risk spots avoided`, "route");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav?.arrived]);
+
+  // A new live alert near the route: reroute (from where you are, if navigating).
   const zoneSig = zones.filter((z) => LIVE_SCORE[z.kind][z.level] > 0).map((z) => `${z.id}:${z.level}`).join("|");
   const lastSig = useRef("");
   useEffect(() => {
     if (zoneSig === lastSig.current) return;
     const prev = lastSig.current;
     lastSig.current = zoneSig;
-    if (!result || !zoneSig || zoneSig.length < prev.length) return;
-    const onRoute = routeRisk(result.safer.coords, result.safer.minutes, new Map(), new Map()).cellsOnRoute;
-    const near = [...live.keys()].some((c) => gridDisk(c, 2).some((n) => onRoute.has(n)));
-    if (near) {
-      compute({ quiet: true, reason: "REROUTE: live alert within 2 cells of the route" });
-      setToast(t("rerouted"));
-    }
+    if (!zoneSig || zoneSig.length < prev.length) return;
+    const n = navRef.current;
+    const coords = n && !n.arrived ? n.route.coords.slice(n.idx) : result?.safer.coords;
+    if (!coords?.length) return;
+    const onRoute = routeRisk(coords, 10, new Map(), new Map()).cellsOnRoute;
+    const near = [...live.keys()].some((c) => gridDisk(c, 2).some((x) => onRoute.has(x)));
+    if (!near) return;
+    setToast(t("rerouted"));
+    if (n && !n.arrived) rerouteFrom(n.pos, "REROUTE: live alert ahead on the route");
+    else compute({ quiet: true, reason: "REROUTE: live alert within 2 cells of the route" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoneSig]);
 
@@ -1066,10 +1196,29 @@ export default function App() {
   };
 
   const simulate = () => {
-    const c = result ? (pick === "fastest" ? result.fastest : result.safer).coords : null;
     setDrawer(false);
+    const n = navRef.current;
+    if (n && !n.arrived) {
+      // Mid-trip: the bang happens on the road ahead of you.
+      const c = n.route.coords;
+      return onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c[Math.min(c.length - 1, n.idx + Math.max(8, Math.floor((c.length - n.idx) * 0.35)))]);
+    }
+    const c = result ? (pick === "fastest" ? result.fastest : result.safer).coords : null;
     onDetect({ confidence: 0.9, label: "gunshot", at: Date.now() }, c ? c[Math.floor(c.length * 0.55)] : undefined);
   };
+
+  // Splash screen: stars while the map and data load (at least ~1.4 s).
+  useEffect(() => {
+    if (!bootAt.current) bootAt.current = performance.now();
+    if (!events.length || !mapReady || splash !== "on") return;
+    const wait = Math.max(0, 1400 - (performance.now() - bootAt.current));
+    const a = setTimeout(() => setSplash("fading"), wait);
+    const b = setTimeout(() => setSplash("off"), wait + 600);
+    return () => {
+      clearTimeout(a);
+      clearTimeout(b);
+    };
+  }, [events.length, mapReady, splash]);
 
   // ---------- reports ----------
   const sendReport = async (cat: string) => {
@@ -1116,14 +1265,27 @@ export default function App() {
   const barHeight = (risk: number) => (tlFlat ? 50 : 18 + 82 * ((risk - tlMin) / (tlMax - tlMin)));
   const bestOffset = r ? r.timeline.reduce((b, x) => (x.risk < b.risk ? x : b)).offset : 0;
   const offsetLabel = (o: number) => (o === 0 ? t("leaveNow") : `+${o >= 60 ? `${o / 60} h` : `${o} min`}`);
-  const showDir = view === "nav" && dirOpen;
-  const showSide = view === "nav" && !dirOpen && panel !== "none";
+  const showDir = view === "nav" && dirOpen && !nav;
+  const showSide = view === "nav" && !dirOpen && panel !== "none" && !nav;
   const recQuery = query.trim().toLowerCase();
   const catHint = recQuery.length >= 2 ? CAT_UI.filter((c) => c.label.toLowerCase().startsWith(recQuery) || categoryFor(recQuery) === c.id) : [];
-  const card = view === "nav" ? (poi ? "poi" : zoneCard ? "zone" : reportCard ? "report" : pin ? "pin" : null) : null;
+  const card = view === "nav" && !nav ? (poi ? "poi" : zoneCard ? "zone" : reportCard ? "report" : pin ? "pin" : null) : null;
+  const navInfo = nav
+    ? (() => {
+        const steps = nav.route.steps;
+        let k = 0;
+        for (let i = 0; i < steps.length; i++) if (steps[i].at <= nav.idx) k = i;
+        const next = steps[k + 1];
+        const total = nav.cum[nav.cum.length - 1] || 1;
+        const remain = Math.max(0, total - nav.cum[nav.idx]);
+        const toNext = next ? Math.max(0, nav.cum[Math.min(next.at, nav.cum.length - 1)] - nav.cum[nav.idx]) : remain;
+        const mins = nav.route.minutes * (remain / total);
+        return { next: next?.text ?? `Arrive at ${to?.label ?? "your destination"}`, toNext, remainMi: remain / 1609.34, mins, eta: new Date(Date.now() + mins * 60000) };
+      })()
+    : null;
 
   return (
-    <div className={`app ${largeText ? "large" : ""} ${contrast ? "contrast" : ""} view-${view} ${showDir || showSide ? "panel-open" : ""}`} lang={lang}>
+    <div className={`app ${largeText ? "large" : ""} ${contrast ? "contrast" : ""} view-${view} ${showDir || showSide ? "panel-open" : ""} ${nav ? "navigating" : ""}`} lang={lang}>
       <div ref={mapDiv} className="map" role="application" aria-label={view === "engine" ? "Map. Click a spot to inspect its risk." : "Map. Click to drop a pin."} />
 
       {/* ----- left rail (desktop) ----- */}
@@ -1503,6 +1665,16 @@ export default function App() {
                   {!same && <RouteOption on={pick === "fastest"} onClick={() => setPick("fastest")} minutes={r.fastest.minutes} mi={r.fastest.mi} title={t("fastestRoute")} sub={`Passes ${r.avoided.length} higher-risk ${r.avoided.length === 1 ? "spot" : "spots"}`} />}
                 </div>
 
+                <div className="start-row">
+                  <button className="btn primary start" onClick={startNav}>
+                    <Navigation size={17} /> Start
+                  </button>
+                  <span className="fine">
+                    {!meInCity ? "No GPS here, so Start runs a simulated trip for the demo." : "Follows your location and reroutes live."}
+                    {chosen?.traffic && chosen.traffic > 1 ? ` Times include typical SF traffic for ${when.toLocaleString("en-US", { weekday: "short", hour: "numeric" })}.` : ""}
+                  </span>
+                </div>
+
                 {r.avoided.length > 0 && (
                   <section className="block why">
                     <div className="why-head">
@@ -1608,6 +1780,7 @@ export default function App() {
           onSelect={selectCell}
           sources={sources}
           center={center}
+          theme={theme ?? "light"}
         />
       )}
 
@@ -1905,6 +2078,90 @@ export default function App() {
         </div>
       )}
 
+      {/* ----- turn-by-turn ----- */}
+      {nav && navInfo && !nav.arrived && (
+        <>
+          <div className="nav-banner" role="status" aria-live="polite">
+            <span className="nb-ico">
+              <CornerUpRight size={30} />
+            </span>
+            <div>
+              <strong>{fmtDist(navInfo.toNext / 1609.34)}</strong>
+              <span>{navInfo.next}</span>
+            </div>
+          </div>
+          <div className="nav-sheet card">
+            <div className="ns-main">
+              <span className="ns-min">{Math.max(1, Math.round(navInfo.mins))} min</span>
+              <span className="ns-sub">
+                {fmtDist(navInfo.remainMi)} · arrive {navInfo.eta.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+              </span>
+              <span className={`ns-live ${nav.rerouting ? "busy" : ""}`}>
+                <Radio size={13} /> {nav.rerouting ? "Rerouting around a live alert…" : `Live: watching ${zones.length} alert${zones.length === 1 ? "" : "s"}${nav.reroutes ? ` · rerouted ${nav.reroutes}×` : ""}`}
+              </span>
+              {nav.sim && <span className="ns-demo">Demo trip · {SIM_SPEEDUP}× speed</span>}
+            </div>
+            <button className="btn" onClick={simulate} title="Demo: a gunshot is detected on the road ahead">
+              <Siren size={16} /> Simulate alert
+            </button>
+            <button className="btn danger-btn" onClick={exitNav}>
+              <X size={16} /> Exit
+            </button>
+          </div>
+        </>
+      )}
+
+      {nav?.arrived && (
+        <div className="arrival" role="dialog" aria-modal="true" aria-labelledby="arrival-title">
+          <div className="arrival-stars" aria-hidden>
+            <Galaxy density={1.2} glowIntensity={0.45} saturation={0.3} hueShift={210} twinkleIntensity={0.6} rotationSpeed={0.06} mouseRepulsion={false} transparent={false} />
+          </div>
+          <div className="arrival-card">
+            <ShieldCheck size={40} />
+            <h2 id="arrival-title">You&apos;ve arrived safely</h2>
+            <p>{to?.label}</p>
+            <div className="arrival-stats">
+              <div>
+                <strong>{Math.round(nav.route.minutes)}</strong>
+                <span>min trip</span>
+              </div>
+              <div>
+                <strong>{nav.avoided}</strong>
+                <span>risky spots avoided</span>
+              </div>
+              <div>
+                <strong>{nav.reroutes}</strong>
+                <span>live reroutes</span>
+              </div>
+            </div>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setNav(null);
+                closeDirections();
+                mapRef.current?.easeTo({ pitch: 0, bearing: 0, duration: 700 });
+              }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {splash !== "off" && (
+        <div className={`splash ${splash === "fading" ? "fading" : ""}`} aria-hidden={splash === "fading"}>
+          <div className="splash-stars" aria-hidden>
+            <Galaxy density={1.1} glowIntensity={0.4} saturation={0.25} hueShift={215} twinkleIntensity={0.5} rotationSpeed={0.05} mouseRepulsion={false} transparent={false} />
+          </div>
+          <div className="splash-brand">
+            <ShieldCheck size={44} />
+            <h1>NorthStar</h1>
+            <p>{t("tagline")}</p>
+            <span className="splash-load">Loading SF safety data…</span>
+          </div>
+        </div>
+      )}
+
       {toast && (
         <div className="toast" role="status">
           {toast}
@@ -1963,44 +2220,66 @@ function RouteOption(p: { on: boolean; onClick: () => void; minutes: number; mi:
   );
 }
 
+// One avoided spot: a satellite snapshot with each incident circled, what happened there,
+// and when. Crashes are amber, violence is red.
 function WhyItem({ a, lang, t }: { a: Avoided; lang: Lang; t: (k: Key) => string }) {
+  const [lng, lat] = cellCenter(a.cell);
+  const sat = satellite(lng, lat, 0.0026, 132, 99);
+  const hex = cellToBoundary(a.cell, true)
+    .map((c) => sat.toPx(c).join(","))
+    .join(" ");
   if (a.live) {
+    const lp = sat.toPx([a.live.lng, a.live.lat]);
     return (
       <span className="why-item">
-        <span className="why-ico live">
-          <Radio size={16} />
+        <span className="why-sat">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={sat.url} alt="" loading="lazy" />
+          <svg viewBox={`0 0 ${sat.W} ${sat.H}`} aria-hidden>
+            <circle cx={lp[0]} cy={lp[1]} r={14} className="ws-live" />
+            <circle cx={lp[0]} cy={lp[1]} r={5} className="ws-crime" />
+          </svg>
         </span>
         <span className="why-text">
-          <strong>{a.live.kind === "sound" ? (a.live.level === "confirmed" ? t("confirmed") : t("caution")) : t(`cat_${a.live.category}` as Key)}</strong>
-          <span className="fine">Live alert · {a.live.count} {a.live.count === 1 ? "phone" : "phones"}</span>
+          <strong className="r-live">{a.live.kind === "sound" ? (a.live.level === "confirmed" ? t("confirmed") : t("caution")) : t(`cat_${a.live.category}` as Key)}</strong>
+          <span className="why-types">Live alert · {a.live.count} {a.live.count === 1 ? "phone" : "phones"}</span>
         </span>
       </span>
     );
   }
-  const crashes = a.events.filter((e) => e.t.startsWith("crash"));
-  const calls = a.events.filter((e) => !e.t.startsWith("crash"));
-  const crime = calls.length * 2 >= crashes.length;
+  const types = new Map<string, number>();
   const where = new Map<string, number>();
-  for (const e of a.events) where.set(placeOf(e.x), (where.get(placeOf(e.x)) ?? 0) + 1);
+  for (const e of a.events) {
+    types.set(e.t, (types.get(e.t) ?? 0) + 1);
+    where.set(placeOf(e.x), (where.get(placeOf(e.x)) ?? 0) + 1);
+  }
   const place = [...where].sort((x, y) => y[1] - x[1])[0]?.[0];
   const latest = [...a.events].sort((x, y) => y.d.localeCompare(x.d))[0];
-  const topCall = (() => {
-    const m = new Map<string, number>();
-    for (const e of calls) m.set(e.t, (m.get(e.t) ?? 0) + 1);
-    return [...m].sort((x, y) => y[1] - x[1])[0];
-  })();
+  const ranked = [...types].sort((x, y) => y[1] - x[1]);
+  const marks = [...a.events].sort((x, y) => y.d.localeCompare(x.d)).slice(0, 24);
   return (
     <span className="why-item">
-      <span className={`why-ico ${crime ? "crime" : "crash"}`}>{crime ? <Siren size={16} /> : <CarFront size={16} />}</span>
+      <span className="why-sat">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={sat.url} alt={`Satellite view near ${place ?? "this block"}`} loading="lazy" />
+        <svg viewBox={`0 0 ${sat.W} ${sat.H}`} aria-hidden>
+          <polygon points={hex} className="ws-hex" />
+          {marks.map((e, i) => {
+            const [x, y] = sat.toPx([e.lng, e.lat]);
+            return <circle key={i} cx={x} cy={y} r={e.t.startsWith("crash") ? 4 : 5} className={e.t.startsWith("crash") ? "ws-crash" : "ws-crime"} />;
+          })}
+        </svg>
+        <span className="ws-count">{a.events.length}</span>
+      </span>
       <span className="why-text">
         <strong>{place ? `Near ${place}` : "Higher-risk block"}</strong>
-        <span className="why-chips">
-          {calls.length > 0 && (
-            <span className="wc crime">
-              {calls.length} {topCall && topCall[1] === calls.length ? (EVENT_LABEL[lang][topCall[0]] ?? "").toLowerCase() : "violent calls"}
+        <span className="why-types">
+          {ranked.slice(0, 3).map(([type, n]) => (
+            <span key={type} className={type.startsWith("crash") ? "wt crash" : "wt crime"}>
+              {n}× {EVENT_LABEL[lang][type] ?? type}
             </span>
-          )}
-          {crashes.length > 0 && <span className="wc crash">{crashes.length} injury crashes</span>}
+          ))}
+          {ranked.length > 3 && <span className="wt more">+{ranked.slice(3).reduce((s, [, n]) => s + n, 0)} more</span>}
         </span>
         {latest && (
           <span className="fine">

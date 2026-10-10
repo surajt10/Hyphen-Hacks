@@ -9,6 +9,7 @@ import { MODES, MODE_MULT, TYPE_WEIGHT, contribution, type CellRisk, type Ev, ty
 import { EVENT_LABEL } from "@/lib/i18n";
 import { fmtDate, fmtHour } from "@/lib/format";
 import { MODE_ICON } from "./icons";
+import Galaxy from "./Galaxy";
 
 export type LogEntry = { t: number; text: string; kind?: "route" | "live" | "data" | "pick" };
 export type Sources = {
@@ -35,6 +36,7 @@ type Props = {
   onSelect: (cell: string | null, fly?: boolean) => void;
   sources: Sources | null;
   center: [number, number];
+  theme: "light" | "dark";
 };
 
 const LABEL = EVENT_LABEL.en;
@@ -46,14 +48,7 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const fmt = (n: number, d = 2) => (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(d));
 const clock = (t: number) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
 
-// USGS aerial imagery for a box, sized so the picture isn't stretched.
-function satellite(lng: number, lat: number, halfLng: number, W = 460, H = 260) {
-  const halfLat = halfLng * (H / W) * Math.cos((lat * Math.PI) / 180);
-  const b = [lng - halfLng, lat - halfLat, lng + halfLng, lat + halfLat];
-  const url = `https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/export?bbox=${b.join(",")}&bboxSR=4326&imageSR=3857&size=${W},${H}&format=jpg&f=image`;
-  const toPx = ([x, y]: number[]) => [((x - b[0]) / (b[2] - b[0])) * W, ((b[3] - y) / (b[3] - b[1])) * H];
-  return { url, toPx, W, H };
-}
+import { satellite } from "@/lib/sat";
 
 function useCountUp(target: number, key: string) {
   const [v, setV] = useState(0);
@@ -141,6 +136,9 @@ export default function Engine(p: Props) {
   return (
     <aside className="engine" aria-label="How NorthStar calculates risk">
       <div className="eng-scan" aria-hidden />
+      <div className="eng-stars" aria-hidden>
+        <Galaxy density={0.9} glowIntensity={0.35} saturation={0.15} hueShift={210} twinkleIntensity={0.5} rotationSpeed={0.04} starSpeed={0.3} mouseRepulsion={false} lightMode={p.theme === "light"} transparent={p.theme !== "light"} />
+      </div>
       <header className="eng-head">
         <div>
           <p className="eyebrow">NorthStar engine</p>

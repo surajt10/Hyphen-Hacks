@@ -20,7 +20,12 @@ export const fmtAgo = (t: number) => {
 export const placeOf = (desc: string) => {
   const i = desc.lastIndexOf(", ");
   const s = i >= 0 ? desc.slice(i + 2) : desc;
-  return s.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).replace(/\s+/g, " ").trim();
+  return s
+    .toLowerCase()
+    .replace(/\b0(\d)/g, "$1")
+    .replace(/\b[a-z]/g, (c) => c.toUpperCase())
+    .replace(/\s+/g, " ")
+    .trim();
 };
 
 // Busiest 3-hour window, e.g. "9 PM–12 AM".
