@@ -7,6 +7,6 @@ reroute everyone nearby within seconds.
 
 
 # Try it out!
-
+Currently Down due to network issues.
 
 https://annotation-fool-prediction-frequently.trycloudflare.com/  
