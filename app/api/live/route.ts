@@ -150,9 +150,11 @@ function zones(now: number) {
   return out;
 }
 
+const BOOT = Date.now();
+
 export async function GET() {
   const now = Date.now();
-  return Response.json({ zones: zones(now), sensors: sensors(now), now });
+  return Response.json({ zones: zones(now), sensors: sensors(now), now, boot: BOOT });
 }
 
 export async function POST(request: Request) {

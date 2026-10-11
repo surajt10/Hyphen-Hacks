@@ -764,6 +764,7 @@ export default function App() {
   }, [pin, mapReady, setData]);
 
   const seen = useRef(new Set<string>());
+  const boot = useRef(0);
   const clock = useRef<{ offset: number; rtt: number; samples: { offset: number; rtt: number }[] }>({ offset: 0, rtt: Infinity, samples: [] });
   useEffect(() => {
     let stop = false;
@@ -777,16 +778,27 @@ export default function App() {
         const bestSample = c.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a));
         c.offset = bestSample.offset;
         c.rtt = bestSample.rtt;
+        if (boot.current && j.boot && boot.current !== j.boot && !navRef.current) return location.reload();
+        boot.current = j.boot ?? boot.current;
         if (!stop) {
           setZones(j.zones);
           if (j.sensors) setSensors(j.sensors);
         }
       } catch {}
-      if (!stop) setTimeout(tick, 1500);
+      if (!stop) timer = setTimeout(tick, 1500);
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wake = () => {
+      if (document.visibilityState !== "visible") return;
+      clearTimeout(timer);
+      tick();
     };
     tick();
+    document.addEventListener("visibilitychange", wake);
     return () => {
       stop = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, []);
   useEffect(() => {
@@ -1301,8 +1313,8 @@ export default function App() {
   };
   const reroutingAt = useRef(0);
   const rerouteFrom = useCallback(
-    (pos: [number, number], reason: string) => {
-      if (Date.now() - reroutingAt.current < 8000) return;
+    (pos: [number, number], reason: string, force = false) => {
+      if (!force && Date.now() - reroutingAt.current < 8000) return;
       reroutingAt.current = Date.now();
       setNav((n) => (n ? { ...n, rerouting: true } : n));
       compute({ quiet: true, reason, from: { label: "Current position", lng: pos[0], lat: pos[1] } });
@@ -1359,21 +1371,24 @@ export default function App() {
   }, [nav?.arrived]);
 
   const zoneSig = zones.filter((z) => LIVE_SCORE[z.kind][z.level] > 0).map((z) => `${z.id}:${z.level}`).join("|");
-  const lastSig = useRef("");
+  const handled = useRef(new Set<string>());
   useEffect(() => {
-    if (zoneSig === lastSig.current) return;
-    const prev = lastSig.current;
-    lastSig.current = zoneSig;
-    if (!zoneSig || zoneSig.length < prev.length) return;
+    const fresh = zones.filter((z) => LIVE_SCORE[z.kind][z.level] > 0 && !handled.current.has(`${z.id}:${z.level}`));
+    fresh.forEach((z) => handled.current.add(`${z.id}:${z.level}`));
+    if (!fresh.length) return;
     const n = navRef.current;
-    const coords = n && !n.arrived ? n.route.coords.slice(n.idx) : result?.safer.coords;
-    if (!coords?.length) return;
-    const onRoute = routeRisk(coords, 10, new Map(), new Map()).cellsOnRoute;
-    const near = [...live.keys()].some((c) => gridDisk(c, 2).some((x) => onRoute.has(x)));
+    const routes = n && !n.arrived ? [n.route.coords.slice(n.idx)] : result ? [result.safer.coords, result.fastest.coords] : [];
+    if (!routes.length) return;
+    const onRoute = new Set(routes.flatMap((c) => [...routeRisk(c, 10, new Map(), new Map()).cellsOnRoute.keys()]));
+    const ends = [n && !n.arrived ? n.pos : start ? ([start.lng, start.lat] as [number, number]) : null, to ? ([to.lng, to.lat] as [number, number]) : null].filter(Boolean) as [number, number][];
+    const near = fresh.some((z) => {
+      const ring = gridDisk(latLngToCell(z.lat, z.lng, 9), 3);
+      return ring.some((c) => onRoute.has(c)) || ends.some((p) => miles(p, [z.lng, z.lat]) < 0.5);
+    });
     if (!near) return;
     setToast(t("rerouted"));
-    if (n && !n.arrived) rerouteFrom(n.pos, "REROUTE: live alert ahead on the route");
-    else compute({ quiet: true, reason: "REROUTE: live alert within 2 cells of the route" });
+    if (n && !n.arrived) rerouteFrom(n.pos, "REROUTE: live alert ahead on the route", true);
+    else compute({ quiet: true, reason: "REROUTE: live alert near the route" });
   }, [zoneSig]);
 
   const selectCell = useCallback(
