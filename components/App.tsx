@@ -1284,6 +1284,16 @@ export default function App() {
       startNav();
     }
   };
+  const clearAlerts = async () => {
+    const j = await fetch("/api/live", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "reset" }) }).then((r) => r.json()).catch(() => null);
+    if (!j) return setToast("Couldn't clear alerts. Check your connection.");
+    setZones([]);
+    setAlert(null);
+    setRiskOk("");
+    addLog("Live alerts cleared (demo reset)", "live");
+    setToast("Gunshot simulations cleared");
+    if (start && to) compute({ quiet: true, reason: "Alerts cleared" });
+  };
   const exitNav = () => {
     setNav(null);
     mapRef.current?.easeTo({ pitch: layers.buildings ? 58 : 0, bearing: 0, duration: 700 });
@@ -2218,6 +2228,11 @@ export default function App() {
       )}
 
       <div className="fab-col">
+        {zones.some((z) => z.kind === "sound") && (
+          <button className="fab card clear-sim" onClick={clearAlerts} aria-label="Clear gunshot simulations" title="Clear gunshot simulations">
+            <Trash2 size={16} />
+          </button>
+        )}
         {view === "nav" && (
           <button className="fab card" onClick={() => setReportOpen(true)} aria-label={t("report")} title={t("report")}>
             <Flag size={18} />

@@ -3247,3 +3247,9 @@ button {
   color: var(--accent-text);
   font-weight: 500;
 }
+.fab.clear-sim {
+  width: 32px;
+  height: 32px;
+  justify-self: end;
+  color: var(--danger);
+}
